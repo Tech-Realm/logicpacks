@@ -1,0 +1,83 @@
+query LpExpoViewer {
+  meActor {
+    __typename
+    ... on UserActor {
+      username
+    }
+    ... on Robot {
+      firstName
+    }
+    accounts {
+      name
+      appsPaginated(first: 100) {
+        edges {
+          node {
+            id
+            fullName
+          }
+        }
+      }
+    }
+  }
+}
+
+query LpEasSimulatorAvailability($appId: String!, $filter: [String!]) {
+  app {
+    byId(appId: $appId) {
+      ownerAccount {
+        name
+        accountFeatureGates(filter: $filter)
+      }
+    }
+  }
+}
+
+mutation LpCreateEasSimulatorSession($input: CreateDeviceRunSessionInput!) {
+  deviceRunSession {
+    createDeviceRunSession(deviceRunSessionInput: $input) {
+      id
+    }
+  }
+}
+
+query LpEasSimulatorSession($id: ID!) {
+  deviceRunSessions {
+    byId(deviceRunSessionId: $id) {
+      id
+      status
+      remoteConfig {
+        ... on AgentDeviceRunSessionRemoteConfig {
+          agentDeviceRemoteSessionUrl
+          agentDeviceRemoteSessionToken
+          webPreviewToken
+          previewApiUrl
+        }
+      }
+    }
+  }
+}
+
+query LpActiveEasSimulatorSessions($appId: String!, $filter: DeviceRunSessionFilterInput) {
+  app {
+    byId(appId: $appId) {
+      deviceRunSessionsPaginated(first: 50, filter: $filter) {
+        edges {
+          node {
+            id
+            status
+            name
+          }
+        }
+      }
+    }
+  }
+}
+
+mutation LpStopEasSimulatorSession($id: ID!) {
+  deviceRunSession {
+    ensureDeviceRunSessionStopped(deviceRunSessionId: $id) {
+      id
+      status
+    }
+  }
+}

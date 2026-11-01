@@ -1,0 +1,23 @@
+{
+  "name": "@logicpacks/source-control-definitions",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./registry": {
+      "types": "./src/registry.ts",
+      "import": "./src/registry.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@logicpacks/source-control-azure-devops": "workspace:*",
+    "@logicpacks/source-control-bitbucket": "workspace:*",
+    "@logicpacks/source-control-core": "workspace:*",
+    "@logicpacks/source-control-forgejo": "workspace:*",
+    "@logicpacks/source-control-gitcafe": "workspace:*",
+    "@logicpacks/source-control-github": "workspace:*",
+    "@logicpacks/source-control-gitlab": "workspace:*"
+  }
+}

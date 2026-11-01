@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        // The helper ships as one dependency-free file run by the user's own Node, so it uses Node APIs directly.
+        "diagnosticSeverity": {
+          "nodeBuiltinImport": "off",
+          "globalDate": "off",
+          "globalTimers": "off",
+          "globalFetch": "off"
+        }
+      }
+    ]
+  },
+  "include": ["src", "vite.config.ts"]
+}

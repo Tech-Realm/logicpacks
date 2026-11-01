@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Illustrative portrait (sample profile)">
+<rect width="200" height="200" fill="#dcdcdc"/>
+<path d="M36 200c4-36 30-56 64-56s60 20 64 56z" fill="#4a4a4a"/>
+<rect x="88" y="120" width="24" height="26" rx="6" fill="#b3b3b3"/>
+<ellipse cx="100" cy="96" rx="32" ry="38" fill="#b3b3b3"/>
+<path d="M66 88c0-28 16-44 34-44s34 16 34 44c-8-12-20-18-34-18s-26 6-34 18z" fill="#222222"/>
+<circle cx="88" cy="96" r="2.6" fill="#111"/><circle cx="112" cy="96" r="2.6" fill="#111"/>
+<path d="M92 116q8 5 16 0" fill="none" stroke="#111" stroke-width="2.4" stroke-linecap="round"/>
+<path d="M74 104c4 22 14 32 26 32s22-10 26-32c-6 8-14 12-26 12s-20-4-26-12z" fill="#222222" opacity=".85"/>
+</svg>

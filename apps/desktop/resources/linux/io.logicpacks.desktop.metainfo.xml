@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.logicpacks.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>LogicPacks</name>
+  <summary>Where your team and its agents work in one place</summary>
+  <developer id="io.logicpacks">
+    <name>LogicPacks</name>
+  </developer>
+  <description>
+    <p>
+      LogicPacks is a desktop app for teams working with coding agents. See what
+      everyone and every agent is doing, review code changes, and reuse what worked.
+    </p>
+    <p>
+      Connect from desktop, web, or mobile to continue working remotely.
+    </p>
+  </description>
+  <launchable type="desktop-id">logicpacks.desktop</launchable>
+  <icon type="stock">logicpacks</icon>
+  <provides>
+    <binary>logicpacks</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <url type="homepage">https://logicpacks.io</url>
+</component>

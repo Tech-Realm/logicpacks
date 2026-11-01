@@ -1,0 +1,117 @@
+/* /demo/machine styles that are not theme tokens: entry motion, and the code recipe's editor,
+   which renders like a live app window (its own dark palette) rather than LogicPacks chrome. */
+@keyframes lp-demo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lp-demo-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+[data-demo-motion="rise"] {
+  animation: lp-demo-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+[data-demo-motion="pop"] {
+  animation: lp-demo-pop 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-demo-motion] {
+    animation: none;
+  }
+}
+
+[data-demo-code] {
+  background: #0d0d0d;
+  color: #d4d4d4;
+  font-size: clamp(0.55rem, 1.25cqw, 0.85rem);
+  line-height: 1.7;
+}
+
+[data-demo-code-tree] {
+  width: 22%;
+  padding: 2%;
+  border-right: 1px solid rgb(255 255 255 / 0.08);
+  color: #8a8a8a;
+}
+
+[data-demo-code-heading] {
+  margin-bottom: 0.6em;
+  font-size: 0.85em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.4);
+}
+
+[data-demo-code-indent] {
+  padding-left: 1.2em;
+}
+
+[data-demo-code-active] {
+  color: #fff;
+}
+
+[data-demo-code-tabs] {
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  font-size: 0.85em;
+}
+
+[data-demo-code-tab] {
+  padding: 0.5em 1.2em;
+  color: rgb(255 255 255 / 0.4);
+}
+
+[data-demo-code-tab="active"] {
+  border-right: 1px solid rgb(255 255 255 / 0.08);
+  background: rgb(255 255 255 / 0.05);
+  color: #fff;
+}
+
+[data-demo-code-body] {
+  padding: 2%;
+}
+
+[data-demo-code-line="new"] {
+  background: rgb(56 189 248 / 0.07);
+}
+
+[data-demo-code-gutter] {
+  width: 2.5em;
+  padding-right: 1em;
+  text-align: right;
+  color: rgb(255 255 255 / 0.25);
+}
+
+[data-demo-tok="str"] {
+  color: #a5d6a7;
+}
+
+[data-demo-tok="kw"] {
+  color: #c792ea;
+}
+
+[data-demo-tok="num"] {
+  color: #f78c6c;
+}
+
+[data-demo-code-thumb] {
+  background: #0d0d0d;
+  color: rgb(255 255 255 / 0.6);
+  font-size: 0.3rem;
+  line-height: 1.6;
+}

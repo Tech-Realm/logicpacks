@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature request
+    url: https://github.com/Tech-Realm/logicpacks/discussions/categories/ideas
+    about: Suggest an improvement or new capability in Discussions.
+  - name: Security report
+    url: https://logicpacks.io
+    about: Report vulnerabilities privately using the contact on logicpacks.io. See SECURITY.md.

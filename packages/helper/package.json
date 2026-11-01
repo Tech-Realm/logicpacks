@@ -1,0 +1,22 @@
+{
+  "name": "@logicpacks/helper",
+  "private": true,
+  "description": "The LogicPacks helper: streams Claude Code and Codex sessions into LogicPacks projects.",
+  "bin": {
+    "lp": "./dist/lp.mjs"
+  },
+  "files": [
+    "dist",
+    "install"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "vp pack",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

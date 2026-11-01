@@ -1,0 +1,223 @@
+/*
+ * LogicPacks brand layer. The rules behind it live in apps/web/DESIGN.md.
+ *
+ * The mark is a pack (rounded square outline) holding one unit of logic (a dot). The app's
+ * form language comes from it and from logicpacks.io:
+ *   - actions are pills; containers are "pack frames" with a soft, generous radius
+ *   - an icon that leads an action sits in its own round well (the dot in the pack)
+ *   - status is a dot, not a fill
+ *   - flat surfaces separated by hairlines; no inset sheens or drop shadows on controls
+ *   - Inter with optical sizing (display cuts at heading sizes), JetBrains Mono for code
+ */
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("./assets/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  /* Shape. Ratios follow the mark: its pack is 19 units with a 5 unit radius (about a quarter). */
+  --lp-radius-pill: 9999px;
+  --lp-radius-frame: 1.25rem; /* composer, cards, first-run panels */
+  --lp-radius-panel: 1rem; /* dialogs, sheets */
+  --lp-radius-float: 0.875rem; /* menus, popovers, tooltips */
+  --lp-radius-row: 0.625rem; /* sidebar and list rows */
+  --lp-radius-field: 0.625rem; /* inputs and textareas */
+
+  /* Lines and wells. */
+  --lp-hairline: color-mix(in srgb, var(--foreground) 13%, transparent);
+  --lp-hairline-strong: color-mix(in srgb, var(--foreground) 24%, transparent);
+  --lp-well: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --lp-well-strong: color-mix(in srgb, var(--foreground) 13%, transparent);
+
+  /* Layout: the window is a grey canvas and the open project is a sheet on it. */
+  --lp-canvas: color-mix(in srgb, var(--foreground) 5%, var(--background));
+  --lp-sheet: var(--background);
+  --lp-sheet-inset: 0.5rem;
+
+  /* Motion: one decelerating curve, three durations. */
+  --lp-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --lp-dur-1: 120ms;
+  --lp-dur-2: 200ms;
+  --lp-dur-3: 320ms;
+
+  @variant dark {
+    --lp-hairline: color-mix(in srgb, var(--foreground) 12%, transparent);
+    --lp-hairline-strong: color-mix(in srgb, var(--foreground) 22%, transparent);
+    --lp-well: color-mix(in srgb, var(--foreground) 9%, transparent);
+    --lp-well-strong: color-mix(in srgb, var(--foreground) 15%, transparent);
+    /* Dark: the canvas is the app's black and the sheet is lifted a step above it. */
+    --lp-canvas: var(--background);
+    --lp-sheet: color-mix(in srgb, var(--foreground) 4.5%, var(--background));
+  }
+}
+
+/* A slightly narrower reading column than upstream, unless the user picked Wide or Full. */
+:root:not([data-chat-width="wide"]):not([data-chat-width="full"]) {
+  --chat-content-max-width: 44rem;
+}
+
+/* Focus is ink, as on logicpacks.io. Doubled :root so it wins over the palette in index.css. */
+:root:root {
+  /* Softer containers than upstream: every radius-* step grows by 2px. */
+  --radius: 0.625rem;
+  --ring: color-mix(in srgb, var(--foreground) 55%, transparent);
+}
+
+@theme inline {
+  --radius-pill: var(--lp-radius-pill);
+  --radius-frame: var(--lp-radius-frame);
+  --radius-panel: var(--lp-radius-panel);
+  --radius-float: var(--lp-radius-float);
+  --radius-row: var(--lp-radius-row);
+  --ease-lp: var(--lp-ease);
+  --color-hairline: var(--lp-hairline);
+  --color-hairline-strong: var(--lp-hairline-strong);
+  --color-well: var(--lp-well);
+  --color-well-strong: var(--lp-well-strong);
+  --color-lp-canvas: var(--lp-canvas);
+  --color-lp-sheet: var(--lp-sheet);
+}
+
+@layer base {
+  html {
+    /* Inter's optical sizes: headings get the display cut, body text the text cut. */
+    font-optical-sizing: auto;
+  }
+  :where(h1, h2, h3) {
+    letter-spacing: -0.022em;
+  }
+  :where(code, kbd, samp, pre) {
+    font-variant-ligatures: none;
+  }
+}
+
+/* A leading icon on an outlined or secondary action sits in a round well: the dot in the
+   pack. Only when the icon leads a label; icon-only buttons stay plain. */
+[data-lp-well] > svg:first-child {
+  box-sizing: content-box;
+  padding: 3px;
+  margin-inline-start: -0.375rem;
+  border-radius: var(--lp-radius-pill);
+  background: var(--lp-well);
+  transition: background-color var(--lp-dur-1) var(--lp-ease);
+}
+[data-lp-well]:is(:hover, [data-pressed]) > svg:first-child {
+  background: var(--lp-well-strong);
+}
+
+/* Status dot: badges that report a state lead with a dot instead of a tinted fill. */
+[data-lp-dot]::before {
+  content: "";
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: none;
+  border-radius: var(--lp-radius-pill);
+  background: currentColor;
+}
+[data-lp-dot="ring"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.25px currentColor;
+}
+[data-lp-dot="pulse"]::before {
+  animation: lp-dot-pulse 1.6s var(--lp-ease) infinite alternate;
+}
+
+@keyframes lp-dot-pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
+/* Layout (DESIGN.md, Layout): the open project is one sheet on the canvas. Everything inside
+   it that paints the app background paints the sheet instead. */
+[data-slot="sidebar-inset"] {
+  --background: var(--lp-sheet);
+}
+
+/* An agent's turn hangs on a spine. The "Worked for" mark sits on
+   it, and a hairline runs down the left edge of the agent's work and reply until the next
+   person speaks. User turns have no spine, so each agent turn reads as one packed unit. */
+[data-timeline-row-kind]:is(
+  [data-timeline-row-kind="turn-fold"],
+  [data-timeline-row-kind="attempt-fold"],
+  [data-timeline-row-kind="work"],
+  [data-timeline-row-kind="work-live"],
+  [data-timeline-row-kind="work-toggle"],
+  [data-timeline-row-kind="thinking"],
+  [data-timeline-row-kind="working"],
+  [data-timeline-row-kind="assistant-meta"],
+  [data-timeline-row-kind="proposed-plan"],
+  [data-timeline-row-kind="event"],
+  [data-timeline-row-kind="html-render"],
+  [data-timeline-row-kind="mcp-app"],
+  [data-message-role="assistant"]
+) {
+  --lp-spine-x: 0.4375rem;
+  position: relative;
+  padding-inline-start: 1.375rem;
+}
+[data-timeline-row-kind]:is(
+    [data-timeline-row-kind="attempt-fold"],
+    [data-timeline-row-kind="work"],
+    [data-timeline-row-kind="work-live"],
+    [data-timeline-row-kind="work-toggle"],
+    [data-timeline-row-kind="thinking"],
+    [data-timeline-row-kind="working"],
+    [data-timeline-row-kind="assistant-meta"],
+    [data-timeline-row-kind="proposed-plan"],
+    [data-timeline-row-kind="event"],
+    [data-timeline-row-kind="html-render"],
+    [data-timeline-row-kind="mcp-app"],
+    [data-message-role="assistant"]
+  )::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--lp-spine-x);
+  width: 1px;
+  background: var(--lp-hairline-strong);
+  pointer-events: none;
+}
+/* The fold row carries the mark on the spine itself, and the spine starts under the mark. */
+[data-timeline-row-kind][data-timeline-row-kind="turn-fold"] {
+  padding-inline-start: 0;
+}
+[data-timeline-row-kind="turn-fold"] > div {
+  border-bottom: 0;
+}
+[data-timeline-row-kind="turn-fold"]::before {
+  content: "";
+  position: absolute;
+  top: 1.625rem;
+  bottom: 0;
+  inset-inline-start: var(--lp-spine-x);
+  width: 1px;
+  background: var(--lp-hairline-strong);
+  pointer-events: none;
+}
+[data-timeline-row-kind="turn-fold"] button[aria-expanded] {
+  margin-inline-start: -0.0625rem;
+}
+
+/* Scrollbars: the thumb is a pill. */
+::-webkit-scrollbar-thumb {
+  border-radius: var(--lp-radius-pill);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
