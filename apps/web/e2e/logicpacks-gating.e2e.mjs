@@ -4,10 +4,10 @@
 // The cloud host (codes, signed grants) and a laptop host from this tree, the Vite dev client in
 // front of the laptop as its owner sees it (the desktop app's own server). Grants are signed with
 // a throwaway key; the laptop is told its public half.
-//   1 no code: the laptop has the editor, projects and people; no talent, apps, packs, pricing,
-//     expert cards or cloud sync (only "Cloud sync: coming soon"); its agents are the installed
+//   1 no code: the laptop has the editor, projects and people; no talent, apps, pricing,
+//     expert cards or cloud sync (only a small "Not synced" chip); its agents are the installed
 //     CLIs with no login button; every gated route answers 403 feature_locked
-//   2 the owner enters a talent+apps+packs code: the laptop asks the cloud, stores the signed
+//   2 the owner enters a talent+apps code: the laptop asks the cloud, stores the signed
 //     grant, and talent, Any app, pricing and expert cards appear; cloud sync stays coming soon
 //   3 a forged grant, a bad code and a bad device id are refused
 //   4 a cloud code unlocks cloud sync on the laptop
@@ -450,7 +450,7 @@ try {
   };
 
   await step(
-    "1 no code: core works; talent, apps, packs, pricing and cloud sync are absent; 403s",
+    "1 no code: core works; talent, apps, pricing and cloud sync are absent; 403s",
     async () => {
       const features = await pageApi(owner, "/api/lp/features");
       expect(
@@ -461,7 +461,6 @@ try {
         ["/api/lp/pricing", null, "talent"],
         ["/api/lp/external/packages", null, "talent"],
         ["/api/lp/experts", null, "talent"],
-        [`/api/lp/packs?projectId=${projectId}`, null, "packs"],
         [`/api/lp/apps/ops?projectId=${projectId}`, null, "apps"],
         ["/api/lp/appstream/state", null, "apps"],
         ["/api/lp/jobs", null, "freelancer_jobs"],
@@ -487,11 +486,27 @@ try {
         (await owner.getByTestId("lp-request-assistance").count()) === 0,
         "Request assistance is shown",
       );
+      expect(!/Request assistance|vetted freelancer/i.test(body), "a talent control is shown");
+      const syncChip = owner.getByTestId("lp-cloud-sync-soon").first();
+      await syncChip.waitFor({ timeout: 30_000 });
       expect(
-        !/Request assistance|vetted freelancer|Save as pack/i.test(body),
-        "a talent or packs control is shown",
+        (await syncChip.innerText()).trim() === "Not synced",
+        "the sync chip does not say Not synced",
       );
-      await owner.getByText("Cloud sync: coming soon").first().waitFor({ timeout: 30_000 });
+      expect((await syncChip.boundingBox()).width < 110, "the sync chip is not small");
+      expect(
+        !/Cloud sync/.test(await owner.locator("body").innerText()),
+        "cloud is advertised in the header",
+      );
+      await syncChip.click();
+      const syncNote = await owner.getByTestId("lp-cloud-sync-note").innerText();
+      expect(
+        syncNote.trim() ===
+          "Sync is coming soon, so your projects keep running even when the host shuts off.",
+        `sync note: ${syncNote}`,
+      );
+      expect(!/code/i.test(syncNote), "the note mentions a code");
+      await owner.keyboard.press("Escape");
       expect(!/Sync to cloud|Make it synced/.test(body), "a cloud sync action is shown");
       // Agents: the installed CLIs, no login button.
       const menus = {
@@ -526,15 +541,15 @@ try {
 
   let talentCode = "";
   await step(
-    "2 the owner enters a talent+apps+packs code: the cloud signs a grant, the features appear",
+    "2 the owner enters a talent+apps code: the cloud signs a grant, the features appear",
     async () => {
-      talentCode = await makeCode(["talent", "apps", "packs"]);
+      talentCode = await makeCode(["talent", "apps"]);
       const redeemed = await pageApi(owner, "/api/lp/features/redeem", {
         code: talentCode.toLowerCase().replaceAll("-", " "),
       });
       expect(redeemed.httpStatus === 200, `redeem: ${JSON.stringify(redeemed)}`);
       const features = await pageApi(owner, "/api/lp/features");
-      for (const feature of ["talent", "apps", "packs", "freelancer_jobs"]) {
+      for (const feature of ["talent", "apps", "freelancer_jobs"]) {
         expect(
           features.features.includes(feature),
           `missing ${feature}: ${JSON.stringify(features)}`,
@@ -547,13 +562,9 @@ try {
         "the cloud did not count the use",
       );
       expect((await pageApi(owner, "/api/lp/pricing")).httpStatus === 200, "pricing still locked");
-      expect(
-        (await pageApi(owner, `/api/lp/packs?projectId=${projectId}`)).httpStatus === 200,
-        "packs still locked",
-      );
       await openHome();
       await owner.getByTestId("any-app-demo-entry").waitFor({ timeout: 30_000 });
-      await owner.getByText("Cloud sync: coming soon").first().waitFor({ timeout: 30_000 });
+      await owner.getByTestId("lp-cloud-sync-soon").first().waitFor({ timeout: 30_000 });
       await owner.goto(`${WEB}/pricing`);
       await owner.getByTestId("lp-pricing-rates").waitFor({ timeout: 30_000 });
       await shot(owner, "02-laptop-talent-pricing");
@@ -597,7 +608,7 @@ try {
     const start = await pageApi(owner, "/api/lp/sync/start", { projectId });
     expect(start.error !== "feature_locked", `sync start: ${JSON.stringify(start)}`);
     await openHome();
-    expect((await owner.getByText("Cloud sync: coming soon").count()) === 0, "still coming soon");
+    expect((await owner.getByTestId("lp-cloud-sync-soon").count()) === 0, "still coming soon");
     await shot(owner, "04-laptop-cloud");
   });
 } catch (error) {

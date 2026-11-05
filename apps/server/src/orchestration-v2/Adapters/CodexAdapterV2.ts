@@ -737,12 +737,21 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
   }) {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
-      input.runtimePolicy.approvalPolicy === undefined
+    // A member without Compute: Codex's own sandbox is the limit (read-only, or workspace-write
+    // when they may edit) and commands outside its trusted set wait for approval, which a member
+    // without Compute cannot give. Codex can still run trusted commands inside that sandbox: this
+    // narrows the agent's shell, it is not "no shell".
+    const limited = input.runtimePolicy.toolLimits !== undefined && !input.runtimePolicy.toolLimits.shell;
+    const approvalPolicy = limited
+      ? ("untrusted" as const)
+      : input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
-      input.runtimePolicy.sandboxPolicy === undefined
+    const sandboxPolicy = limited
+      ? input.runtimePolicy.toolLimits?.edits === true
+        ? ({ type: "workspaceWrite" } as const)
+        : ({ type: "readOnly" } as const)
+      : input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort =

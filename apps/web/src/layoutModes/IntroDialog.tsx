@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { cn } from "../lib/utils";
+import { cn, isMacPlatform } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import {
@@ -35,7 +35,7 @@ const SCREENS = [
     title: "Delegate with guardrails",
     body: [
       "Give an agent a goal with milestones and limits. It reports back and flags drift before it costs you.",
-      "Goals is in beta. Packs let you reuse what worked in another thread or project.",
+      "Goals is in beta.",
     ],
   },
 ] as const;
@@ -67,7 +67,11 @@ export function IntroDialog({ open }: { readonly open: boolean }) {
             <DialogHeader>
               <DialogTitle>Pick your layout</DialogTitle>
               <DialogDescription>
-                You can switch any time from the top bar, or press Cmd+Alt+L.
+                You can switch any time from the top bar, or press{" "}
+                {typeof navigator !== "undefined" && !isMacPlatform(navigator.platform)
+                  ? "Ctrl+Alt+L"
+                  : "Cmd+Alt+L"}
+                .
               </DialogDescription>
             </DialogHeader>
             <DialogPanel>

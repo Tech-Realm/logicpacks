@@ -44,6 +44,7 @@ const reportFailure = (title: string) => (error: unknown) => {
 function WorkspaceMenuItems({ session }: { session: LpSession }) {
   const current = currentWorkspace(session);
   const { canRedeem } = useFeatures();
+  const canCreate = session.canCreateProjects !== false;
   return (
     <>
       <MenuGroup>
@@ -69,8 +70,17 @@ function WorkspaceMenuItems({ session }: { session: LpSession }) {
         </MenuRadioGroup>
       </MenuGroup>
       <MenuSeparator />
-      <MenuItem onClick={() => openLpDialog({ kind: "new-workspace" })}>New workspace</MenuItem>
-      <MenuItem onClick={() => openLpDialog({ kind: "add-project" })}>Add project</MenuItem>
+      {canCreate ? (
+        <>
+          <MenuItem onClick={() => openLpDialog({ kind: "new-workspace" })}>New workspace</MenuItem>
+          <MenuItem onClick={() => openLpDialog({ kind: "add-project" })}>Add project</MenuItem>
+        </>
+      ) : (
+        // A member without the Projects zone: said plainly, not hidden.
+        <MenuItem disabled data-testid="lp-new-workspace-soon">
+          New workspaces on your own computer are coming in the next update.
+        </MenuItem>
+      )}
       {current ? (
         <MenuItem
           onClick={() => openLpDialog({ kind: "manage", workspaceId: current.workspaceId })}

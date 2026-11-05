@@ -1203,7 +1203,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "Let your other devices connect to LogicPacks over the network. Pair devices to give them access. LogicPacks will restart."
+                    ? `Let your other devices connect to LogicPacks over the network. Pair devices to give them access. LogicPacks will restart.${typeof navigator !== "undefined" && /Win/i.test(navigator.platform) ? " Windows then asks whether LogicPacks may use the network: choose Allow (on a standard account this needs an administrator)." : ""}`
                     : "Devices connected over your local network will disconnect. Existing tunnels, such as LogicPacks Connect or Tailscale HTTPS, keep working. LogicPacks will restart."}
                 </AlertDialogDescription>
               </AlertDialogHeader>

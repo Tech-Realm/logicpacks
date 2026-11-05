@@ -28,6 +28,7 @@ import {
   GATED_FEATURES,
   generateCode,
   hashCode,
+  isGatedFeature,
   makeRateLimiter,
   normalizeCode,
   redeem,
@@ -262,7 +263,7 @@ export const make = Effect.gen(function* () {
   const featuresOf = (subject: FeatureSubject): ReadonlySet<GatedFeature> => {
     if (isStaff(subject)) return ALL;
     const userId = subject.kind === "member" ? subject.userId : "";
-    const out = new Set<GatedFeature>(users.get(userId)?.features ?? []);
+    const out = new Set<GatedFeature>((users.get(userId)?.features ?? []).filter(isGatedFeature));
     if (subject.kind === "member") {
       // Host-wide default for every member (self-hosted teams, test harnesses).
       for (const feature of envList("LOGICPACKS_MEMBER_FEATURES")) {

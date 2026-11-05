@@ -276,6 +276,7 @@ interface MessagesTimelineProps {
   onFileOpen?: (attachment: ChatFileAttachment) => void;
   onFileDownload?: (attachment: ChatFileAttachment) => void;
   activeThreadEnvironmentId: EnvironmentId;
+  activeThreadId?: string | undefined;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
@@ -375,6 +376,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onFileOpen = NOOP_OPEN_ATTACHMENT,
   onFileDownload = NOOP_OPEN_ATTACHMENT,
   activeThreadEnvironmentId,
+  activeThreadId,
   markdownCwd,
   resolvedTheme,
   timestampFormat,
@@ -1025,6 +1027,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     skills,
     runs,
     activeThreadEnvironmentId,
+    activeThreadId,
     onRevertToTurnCount,
     onRunShellCommand,
     findActive,

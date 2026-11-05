@@ -26,12 +26,6 @@ export interface ParticipantMetrics {
   readonly projectsShared: number;
   /** Threads started in projects that more than one person can open. */
   readonly threadsShared: number;
-  readonly recipesPublished: number;
-  readonly recipesReused: number;
-  /** Teammates who reused a pack this participant published (one per pack and teammate). */
-  readonly packTeammateReuses: number;
-  /** Times teammates reused packs this participant published. */
-  readonly packReusesReceived: number;
   readonly conflictsResolved: number;
   readonly helperSessionsLinked: number;
 }
@@ -48,10 +42,6 @@ export const EMPTY_METRICS: ParticipantMetrics = {
   inviteesJoined: 0,
   projectsShared: 0,
   threadsShared: 0,
-  recipesPublished: 0,
-  recipesReused: 0,
-  packTeammateReuses: 0,
-  packReusesReceived: 0,
   conflictsResolved: 0,
   helperSessionsLinked: 0,
 };
@@ -70,7 +60,6 @@ export interface AchievementDefinition {
 export const ACHIEVEMENT_SHELVES: ReadonlyArray<LpAchievementShelf> = [
   { id: "first-steps", name: "First steps" },
   { id: "together", name: "Working together" },
-  { id: "recipes", name: "Recipes" },
   { id: "milestones", name: "Milestones" },
 ];
 
@@ -215,66 +204,6 @@ export const ACHIEVEMENTS: ReadonlyArray<AchievementDefinition> = [
     15,
     "helperSessionsLinked",
     25,
-  ),
-  define(
-    "recipe_author",
-    "First pack",
-    "Save a thread, prompt chain or workflow as a pack others can reuse.",
-    "recipes",
-    "silver",
-    10,
-    "recipesPublished",
-    1,
-  ),
-  define(
-    "passed_around",
-    "Passed around",
-    "A teammate reused a pack you published.",
-    "recipes",
-    "silver",
-    15,
-    "packTeammateReuses",
-    1,
-  ),
-  define(
-    "crowd_favourite",
-    "Crowd favourite",
-    "Teammates reused your packs 10 times.",
-    "recipes",
-    "gold",
-    40,
-    "packReusesReceived",
-    10,
-  ),
-  define(
-    "head_chef",
-    "Head chef",
-    "Publish 5 recipes.",
-    "recipes",
-    "gold",
-    30,
-    "recipesPublished",
-    5,
-  ),
-  define(
-    "second_helping",
-    "Second helping",
-    "Reuse a recipe a teammate ran.",
-    "recipes",
-    "bronze",
-    5,
-    "recipesReused",
-    1,
-  ),
-  define(
-    "regular",
-    "House favourite",
-    "Reuse recipes 10 times.",
-    "recipes",
-    "silver",
-    15,
-    "recipesReused",
-    10,
   ),
   define(
     "hundred_turns",

@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { FULL_ZONES } from "@logicpacks/contracts";
 import {
   type OrchestrationV2DomainEvent,
   type PresenceStreamEvent,
@@ -72,6 +73,14 @@ it.effect("moves a member's agent cursor with its edits and removes it when the 
       Layer.mock(LogicPacksAccess)({
         listUsers: () => Effect.succeed([{ userId: "ali", displayName: "Ali" }] as never),
         roleOf: () => null,
+        isReadOnly: () => false,
+    zonesOf: () => FULL_ZONES,
+    canCreateProjects: () => true,
+    creationWorkspaceId: () => null,
+    zoneSettings: () => ({ projectDefault: null, overrides: new Map() }),
+    onZonesChanged: () => () => undefined,
+    accessLog: () => [],
+    accessRequests: () => [],
         visibleProjectIds: () => new Set(),
         isSynced: () => false,
         syncedProjectIds: () => new Set(),

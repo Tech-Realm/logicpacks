@@ -454,6 +454,9 @@ function negotiationCard(negotiation: LpNegotiation, threadId: string): Composer
 }
 
 function conflictCard(conflict: LpLedgerConflict, threadId: string): ComposerBannerStackItem {
+  const saved = conflict.preserved ?? [];
+  const fail = (title: string, error: unknown) =>
+    toastManager.add({ type: "error", title, description: errorText(error) });
   return {
     id: `lp-conflict:${conflict.id}`,
     variant: "warning",
@@ -464,6 +467,49 @@ function conflictCard(conflict: LpLedgerConflict, threadId: string): ComposerBan
       </span>
     ),
     description: `${conflict.people.join(" and ")}: ${conflict.reason}`,
+    ...(saved.length === 0
+      ? {}
+      : {
+          children: (
+            <div className="flex flex-col gap-1" data-testid="lp-conflict-saved">
+              {saved.map((version) => (
+                <div
+                  key={version.threadId}
+                  className="flex items-center gap-2 text-xs"
+                  data-testid="lp-conflict-version"
+                  data-thread-id={version.threadId}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {version.name}&apos;s version of {version.path} is saved
+                  </span>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    data-testid="lp-conflict-restore"
+                    onClick={async () => {
+                      try {
+                        await lpApi.restoreVersion({
+                          threadId,
+                          conflictId: conflict.id,
+                          versionThreadId: version.threadId,
+                        });
+                        toastManager.add({
+                          type: "success",
+                          title: `${version.name}'s version of ${version.path} is back`,
+                        });
+                        await refreshThreadLedger(threadId);
+                      } catch (error) {
+                        fail("Could not restore that version", error);
+                      }
+                    }}
+                  >
+                    Restore
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ),
+        }),
     actions: (
       <Button
         size="xs"
@@ -471,14 +517,14 @@ function conflictCard(conflict: LpLedgerConflict, threadId: string): ComposerBan
         data-testid="lp-conflict-merge"
         onClick={async () => {
           try {
-            await lpApi.proposeMerge({ threadId, conflictId: conflict.id });
+            if (conflict.localMerge === true) {
+              await lpApi.keepBoth({ threadId, conflictId: conflict.id });
+            } else {
+              await lpApi.proposeMerge({ threadId, conflictId: conflict.id });
+            }
             await refreshThreadLedger(threadId);
           } catch (error) {
-            toastManager.add({
-              type: "error",
-              title: "Could not start the merge",
-              description: errorText(error),
-            });
+            fail("Could not start the merge", error);
           }
         }}
       >

@@ -24,6 +24,13 @@ describe("layout mode schema", () => {
     expect(VIBE_LAYOUT_MODE.autoOpen).toBe("none");
   });
 
+  it("opens Dev at 70% files and editor, 30% chat, like Cursor; copies keep their own pixel width", () => {
+    expect(DEV_LAYOUT_MODE.workspaceShare).toBe(0.7);
+    expect(VIBE_LAYOUT_MODE.workspaceShare).toBeUndefined();
+    expect(custom.workspaceShare).toBeUndefined();
+    expect(custom.widths.workspace).toBe(DEV_LAYOUT_MODE.widths.workspace);
+  });
+
   it("defaults to Dev for developers and Vibe otherwise, and falls back from unknown ids", () => {
     expect(resolveLayoutMode(null, [], "developer").id).toBe("dev");
     expect(resolveLayoutMode(null, [], "beginner").id).toBe("vibe");

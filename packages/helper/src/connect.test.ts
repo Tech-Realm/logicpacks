@@ -388,13 +388,12 @@ describe("unified diff", () => {
 describe("the block and the prompt", () => {
   it("keeps the global block short and maps the intents", () => {
     const lines = globalBlockBody().split("\n");
-    expect(lines.length).toBeGreaterThanOrEqual(15);
+    expect(lines.length).toBeGreaterThanOrEqual(13);
     expect(lines.length).toBeLessThanOrEqual(25);
     const text = lines.join("\n");
     for (const command of [
       "lp share",
       "lp invite",
-      "lp assist request",
       "lp goals plan",
       "lp who",
       "lp send",

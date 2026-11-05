@@ -1,6 +1,7 @@
 import * as SecretResolver from "@logicpacks/secret-provider-core/server/SecretResolver";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { FULL_ZONES } from "@logicpacks/contracts";
 import {
   AuthSessionId,
   EnvironmentId,
@@ -538,6 +539,14 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   LogicPacksPresence.layer,
   Layer.mock(LogicPacksAccess.LogicPacksAccess)({
     roleOf: () => null,
+    isReadOnly: () => false,
+    zonesOf: () => FULL_ZONES,
+    canCreateProjects: () => true,
+    creationWorkspaceId: () => null,
+    zoneSettings: () => ({ projectDefault: null, overrides: new Map() }),
+    onZonesChanged: () => () => undefined,
+    accessLog: () => [],
+    accessRequests: () => [],
     visibleProjectIds: () => new Set(),
     isSynced: () => false,
     syncedProjectIds: () => new Set(),

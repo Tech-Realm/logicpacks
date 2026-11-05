@@ -15,6 +15,9 @@ import { usePullRequestDraftThread } from "./chat/usePullRequestDraftThread";
 import { useComposerSelection } from "./chat/useComposerSelection";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
 import { useLpSyncBanner } from "../logicpacks/SyncControls";
+import { LpReadOnlyBanner } from "../logicpacks/ReadOnlyBanner";
+import { useLpReadOnly } from "../logicpacks/store";
+import { LpComposerAccessNote } from "../logicpacks/AccessControls";
 import { useLpThreadNotices } from "../logicpacks/LedgerControls";
 import { useLpExternalCards } from "../logicpacks/ExternalControls";
 import { useLpGoalCards } from "../logicpacks/GoalsControls";
@@ -283,6 +286,7 @@ import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
 import {
   PanelLayoutControls,
   type PanelLayoutControlsProps,
+  type TitlebarControlsSlot,
   RightPanelMaximizeControl,
   ThreadPanelHeaderControl,
   WorkspaceTitlebarControls,
@@ -640,12 +644,6 @@ export default function ChatView(props: ChatViewProps) {
     return inserted;
   };
   const citeAssistantTextStable = useStableCallback(citeAssistantText);
-  // LogicPacks: a thread saved as a pack carries its prompts as workflow steps.
-  const getThreadPromptsStable = useStableCallback((): ReadonlyArray<string> =>
-    (serverProjection?.messages ?? [])
-      .filter((message) => message.role === "user")
-      .map((message) => message.text),
-  );
   const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] = useState(false);
   const [optimisticBlobPreviews] = useState(createOptimisticBlobPreviews);
   const [heldOptimisticUserMessages, setHeldOptimisticUserMessages] = useState(() =>
@@ -1111,6 +1109,8 @@ export default function ChatView(props: ChatViewProps) {
     environmentId: activeThreadEnvironmentId ?? null,
     title: activeProject?.title ?? null,
   });
+  // LogicPacks: a Read only member sees the thread but cannot write in it.
+  const lpReadOnly = useLpReadOnly(activeProject?.id ?? draftThread?.projectId ?? null);
   // LogicPacks: messages from other threads, conflicts and negotiation cards for this thread.
   const lpLedgerItems = useLpThreadNotices({
     threadId: isServerThread && activeThread ? activeThread.id : null,
@@ -3223,10 +3223,12 @@ export default function ChatView(props: ChatViewProps) {
     onToggleThreadPanel: toggleThreadPanelStable,
     onToggleRightPanel: toggleRightPanelStable,
   } satisfies PanelLayoutControlsProps;
-  const panelToggleControls = (
+  const panelToggleControls = (slot: TitlebarControlsSlot) => (
     <PanelLayoutControls
       {...panelToggleControlProps}
       showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
+      maximizeControl={slot.maximizeControl}
+      budget={slot.budget}
     />
   );
   const threadPanelHeaderControl = <ThreadPanelHeaderControl {...panelToggleControlProps} />;
@@ -3234,7 +3236,6 @@ export default function ChatView(props: ChatViewProps) {
     <WorkspaceTitlebarControls
       showMaximizeControl={!shouldUsePlanSidebarSheet}
       rightPanelOpen={rightPanelOpen}
-      animationsActive={panelAnimationsActive}
       maximized={rightPanelMaximized}
       onToggleMaximized={toggleRightPanelMaximizedStable}
     >
@@ -3311,7 +3312,6 @@ export default function ChatView(props: ChatViewProps) {
               ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
               : {})}
             {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
-            getThreadPrompts={getThreadPromptsStable}
           />
         </header>
 
@@ -3409,6 +3409,7 @@ export default function ChatView(props: ChatViewProps) {
                 )}
                 runningRunId={activeRunningTurnId}
                 turnDiffSummaries={turnDiffSummaries}
+                activeThreadId={activeThread.id}
                 activeThreadEnvironmentId={
                   displayedThreadRef?.environmentId ?? activeThread.environmentId
                 }
@@ -3529,7 +3530,22 @@ export default function ChatView(props: ChatViewProps) {
                               onOpenParent={parentThreadLink?.open ?? null}
                             />
                           ) : null}
-                          {!composerMounted ? null : (
+                          {lpReadOnly ? null : (
+                            <LpComposerAccessNote
+                              projectId={activeProject?.id ?? draftThread?.projectId ?? null}
+                              selected={
+                                selectedProviderEntry
+                                  ? {
+                                      instanceId: selectedProviderEntry.instanceId,
+                                      driver: selectedProviderEntry.driverKind,
+                                    }
+                                  : null
+                              }
+                            />
+                          )}
+                          {lpReadOnly ? (
+                            <LpReadOnlyBanner />
+                          ) : !composerMounted ? null : (
                             <ChatComposer
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
@@ -3885,6 +3901,9 @@ export default function ChatView(props: ChatViewProps) {
           workspaceLayoutElement={workspaceLayoutElement}
           widthStorageKey={`logicpacks:preview-panel-width:${layoutMode.id}:${activeThreadKey}`}
           defaultWidth={layoutMode.widths.workspace}
+          {...(layoutMode.workspaceShare !== undefined
+            ? { defaultWidthShare: layoutMode.workspaceShare }
+            : {})}
           sheetAnimationDurationMs={panelAnimationsActive ? panelAnimationDurationMs : 0}
           onCloseSheet={closePreviewPanelStable}
           open={rightPanelOpen}
@@ -3898,7 +3917,7 @@ export default function ChatView(props: ChatViewProps) {
                   maximized={rightPanelMaximized}
                   onToggle={toggleRightPanelMaximizedStable}
                 />
-                {panelToggleControls}
+                {panelToggleControls({ maximizeControl: null, budget: null })}
               </div>
             ) : null
           }

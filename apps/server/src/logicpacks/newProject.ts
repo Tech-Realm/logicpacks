@@ -97,7 +97,7 @@ export const createProject = Effect.fn("logicpacks.createProject")(function* (
   }
   if (recipe.id !== DEFAULT_RECIPE_ID) yield* scaffoldProjectRecipe(created.workspaceRoot, recipe);
   if (callerUserId !== null) yield* lp.recordOwner(created.projectId, callerUserId);
-  const workspaceId = lp.currentWorkspaceId(callerUserId);
+  const workspaceId = lp.creationWorkspaceId(callerUserId);
   if (workspaceId !== null) yield* lp.attachProject(created.projectId, workspaceId);
   yield* revealClaimedProject(created.projectId);
   return { kind: "created", projectId: created.projectId } satisfies NewProjectResult;

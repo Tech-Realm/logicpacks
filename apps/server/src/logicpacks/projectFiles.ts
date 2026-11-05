@@ -261,11 +261,14 @@ export const zipProject = (input: {
   readonly root: string;
   readonly folderName: string;
   readonly maxBytes: number;
+  /** Project-relative paths to leave out (secret files hidden from this person). */
+  readonly exclude?: ((relative: string) => boolean) | undefined;
 }): Buffer => {
   const realRoot = realpathLenient(NodePath.resolve(input.root));
   const entries: Array<ZipEntry> = [];
   let total = 0;
   for (const relative of listProjectFiles(realRoot)) {
+    if (input.exclude?.(relative) === true) continue;
     const absolute = NodePath.join(realRoot, relative);
     const info = NodeFS.lstatSync(absolute, { throwIfNoEntry: false });
     // Symlinks are left out: following one could read outside the project.
@@ -302,6 +305,24 @@ export const githubRepoOf = (remote: string | null): string | null => {
       remote.trim(),
     );
   return match ? `${match[1]}/${match[2]}` : null;
+};
+
+/**
+ * The repository a project's folder already pushes to (its git `origin`), for a laptop project that
+ * was shared with `lp share` and so has no Sync record. Null when the folder has none.
+ */
+export const originRemote = (root: string): string | null => {
+  try {
+    const result = NodeChildProcess.spawnSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    const url = result.status === 0 ? result.stdout.trim() : "";
+    return url === "" ? null : url;
+  } catch {
+    return null;
+  }
 };
 
 /** The URL people clone: credentials stripped, GitHub as https. */

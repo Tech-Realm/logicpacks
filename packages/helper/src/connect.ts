@@ -1,6 +1,7 @@
 // oxlint-disable logicpacks/no-global-process-runtime -- plain Node CLI shipped as one file; there is no Effect runtime to inject.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
 
 import { callHost, gitInfo, RejectedError } from "./client.ts";
@@ -449,7 +450,7 @@ const projectLink = async (ctx: Context, config: HelperConfig, projectId: string
         })
       ).link;
     }
-    return new URL(link.path, config.server!).toString();
+    return await linkUrl(link.path, config.server!);
   } catch (error) {
     if (error instanceof RejectedError && error.status === 401) throw error;
     return null;
@@ -481,6 +482,34 @@ const scopedLink = async (
   };
 };
 
+const isLoopbackHost = (host: string) =>
+  host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+
+/**
+ * A link for other people. The app on this computer answers on 127.0.0.1, which nobody else can
+ * open: when Network access is on, the app also answers on this computer's address, so use that.
+ */
+const linkUrl = async (path: string, server: string): Promise<string> => {
+  const url = new URL(path, server);
+  if (!isLoopbackHost(url.hostname)) return url.toString();
+  const candidates = Object.values(NodeOs.networkInterfaces())
+    .flatMap((list) => list ?? [])
+    .filter((entry) => entry.family === "IPv4" && !entry.internal)
+    .map((entry) => entry.address)
+    .sort((a, b) => Number(/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))/.test(b)) - Number(/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))/.test(a)));
+  for (const address of candidates) {
+    const probe = new URL(url.toString());
+    probe.hostname = address;
+    try {
+      const response = await fetch(new URL("/", probe), { signal: AbortSignal.timeout(1500) });
+      if (response.status < 500) return probe.toString();
+    } catch {
+      // Not reachable on this address: Network access is off, or it is another interface.
+    }
+  }
+  return url.toString();
+};
+
 const linkLine = (label: string, scoped: { link: string | null; scope: InviteScope }) =>
   scoped.link === null ? null : `${label} (${SCOPE_TEXT[scoped.scope]}): ${scoped.link}`;
 
@@ -490,7 +519,7 @@ const inviteLink = async (ctx: Context, config: HelperConfig, workspaceId: strin
     config,
     `/api/lp/workspaces/invite?workspaceId=${encodeURIComponent(workspaceId)}`,
   );
-  return new URL(path, config.server!).toString();
+  return await linkUrl(path, config.server!);
 };
 
 const repoName = (root: string) =>
@@ -511,7 +540,20 @@ export const shareCommand = async (ctx: Context, args: ParsedArgs): Promise<Outp
   }
   if (!git("rev-parse", "--verify", "HEAD").ok) {
     git("add", "-A");
-    const commit = git("commit", "-m", "Share with LogicPacks", "--allow-empty");
+    let commit = git("commit", "-m", "Share with LogicPacks", "--allow-empty");
+    if (!commit.ok && /identity unknown|empty ident|unable to auto-detect/i.test(commit.stderr)) {
+      // A fresh computer has no git identity yet: commit with a neutral one, for this commit only.
+      commit = git(
+        "-c",
+        "user.name=LogicPacks",
+        "-c",
+        "user.email=noreply@logicpacks.io",
+        "commit",
+        "-m",
+        "Share with LogicPacks",
+        "--allow-empty",
+      );
+    }
     if (!commit.ok) return refuse(`git commit failed: ${commit.stderr}`);
     steps.push("Made a first commit.");
   }
@@ -630,7 +672,7 @@ export const inviteCommand = async (ctx: Context, args: ParsedArgs): Promise<Out
           { ok: true, added: shared.member.user, ...scopeData },
         );
       }
-      const link = shared.invite ? new URL(shared.invite.path, config.server!).toString() : null;
+      const link = shared.invite ? await linkUrl(shared.invite.path, config.server!) : null;
       return output(
         [
           `Invited ${shared.invite?.email ?? who} to ${project.projectTitle} (this project only)${shared.emailSent ? "; they got an email" : ""}.`,
@@ -790,7 +832,7 @@ export const revokeInviteCommand = async (ctx: Context, args: ParsedArgs): Promi
     const { path } = await ctx.call<{ path: string }>(config, "/api/lp/workspaces/invite/reset", {
       body: { workspaceId: project.workspaceId },
     });
-    const link = new URL(path, config.server!).toString();
+    const link = await linkUrl(path, config.server!);
     return output(
       `The old workspace invite link no longer works. New link (${SCOPE_TEXT.workspace}): ${link}`,
       { ok: true, inviteLink: link, inviteScope: "workspace" },
@@ -838,7 +880,7 @@ export const revokeInviteCommand = async (ctx: Context, args: ParsedArgs): Promi
   const { link } = await ctx.call<{ link: LinkView }>(config, "/api/lp/shares/link/reset", {
     body: { projectId: project.projectId },
   });
-  const url = new URL(link.path, config.server!).toString();
+  const url = await linkUrl(link.path, config.server!);
   return output(`The old invite link no longer works. New link (${SCOPE_TEXT.project}): ${url}`, {
     ok: true,
     inviteLink: url,
@@ -1244,67 +1286,6 @@ export const assistCommand = async (ctx: Context, args: ParsedArgs): Promise<Out
   return refuse("Usage: lp assist request|list|experts|end");
 };
 
-// ── Packs ──
-
-export const packsCommand = async (ctx: Context, args: ParsedArgs): Promise<Output> => {
-  const config = signedIn(ctx);
-  const [sub = "list", ...rest] = args.positionals;
-  const me = await register(ctx, args);
-  if (sub === "list") {
-    const { packs } = await ctx.call<{
-      packs: Array<{ pack: { id: string; name: string; description?: string } }>;
-    }>(config, `/api/lp/packs?projectId=${encodeURIComponent(me.projectId)}`);
-    return output(
-      packs.length === 0
-        ? 'No packs in this project yet. Save one with lp packs save "<name>".'
-        : packs.map(({ pack }) => `${pack.id}  ${pack.name}`).join("\n"),
-      { packs: packs.map(({ pack }) => pack) },
-    );
-  }
-  if (sub === "save") {
-    const name = rest.join(" ").trim();
-    const saved = await ctx.call<{ pack: { id: string; name: string } }>(
-      config,
-      "/api/lp/packs/save",
-      {
-        body: { threadId: me.threadId, ...(name ? { name } : {}) },
-        timeoutMs: 30_000,
-      },
-    );
-    return output(`Saved pack ${saved.pack.name} (${saved.pack.id}).`, {
-      ok: true,
-      pack: saved.pack,
-    });
-  }
-  if (sub === "use") {
-    const packId = rest[0];
-    if (!packId) return refuse("Usage: lp packs use <id> [--to <person>]");
-    let targetThreadId = me.threadId;
-    const to = flagValue(args, "to");
-    if (to !== null) {
-      const { agents } = await ctx.call<{ agents: Array<AgentEntry> }>(
-        config,
-        `/api/lp/connect/agents?projectId=${encodeURIComponent(me.projectId)}&all=1`,
-      );
-      const target = agents.find((agent) => agent.person?.toLowerCase() === to.toLowerCase());
-      if (target === undefined) return refuse(`No thread for ${to} in this project.`);
-      targetThreadId = target.threadId;
-    }
-    await ctx.call(config, "/api/lp/packs/use", {
-      body: { projectId: me.projectId, packId, targetThreadId },
-    });
-    return output(
-      `Handed pack ${packId} to ${to ?? "your thread"}; the agent reads it on its next turn.`,
-      {
-        ok: true,
-        packId,
-        targetThreadId,
-      },
-    );
-  }
-  return refuse("Usage: lp packs save|list|use");
-};
-
 // ── Goals (beta) ──
 
 export const GOALS_UNAVAILABLE = "Goals are not available on this host yet.";
@@ -1613,7 +1594,8 @@ export const setupBlockCommand = (): Output => {
   return output(block, { block });
 };
 
-export const helpAgentsCommand = (): Output => output(agentsHelp(), { help: agentsHelp() });
+export const helpAgentsCommand = (features: ReadonlyArray<string> = []): Output =>
+  output(agentsHelp(features), { help: agentsHelp(features) });
 
 /** Every agent-facing command, by name. */
 export const CONNECT_COMMANDS: Record<
@@ -1638,7 +1620,6 @@ export const CONNECT_COMMANDS: Record<
   inbox: inboxCommand,
   editing: editingCommand,
   assist: assistCommand,
-  packs: packsCommand,
   goals: goalsCommand,
   setup: setupCommand,
   "setup-prompt": (_ctx, args) => setupPromptCommand(args),

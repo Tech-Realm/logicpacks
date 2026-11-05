@@ -1,4 +1,3 @@
-import type { RecipeManifest } from "@logicpacks/contracts";
 import { readDesktopPrimaryBearerToken } from "../environments/primary/desktopAuth";
 import { resolvePrimaryEnvironmentHttpUrl } from "../environments/primary/target";
 import type { LpProjectLocal } from "./projectFiles.logic";
@@ -9,7 +8,8 @@ export interface LpUser {
   readonly displayName: string;
 }
 
-export type LpWorkspaceRole = "owner" | "member";
+/** `viewer` is shown as "Read only": sees everything, changes nothing. */
+export type LpWorkspaceRole = "owner" | "member" | "viewer";
 
 export interface LpWorkspace {
   readonly workspaceId: string;
@@ -34,6 +34,12 @@ export interface LpConnection {
   readonly account: string | null;
 }
 
+export interface LpSeat {
+  readonly preset: "chat" | "edit" | "full" | "readonly" | "custom";
+  readonly zones: Readonly<Record<string, string>>;
+  readonly source: "owner" | "seat" | "override" | "default" | "fallback";
+}
+
 export interface LpSession {
   /** Null for the host operator (desktop owner, paired device). */
   readonly user: LpUser | null;
@@ -46,6 +52,12 @@ export interface LpSession {
   readonly hostLabel?: string | null;
   readonly workspaces: ReadonlyArray<LpWorkspace>;
   readonly currentWorkspaceId: string | null;
+  /** This member's access zones per visible project (the server enforces them). */
+  readonly access?: Readonly<Record<string, LpSeat>>;
+  /** Projects zone: may this person create projects and workspaces here. False hides the actions. */
+  readonly canCreateProjects?: boolean;
+  /** The agents the host has installed: what its members can be lent. */
+  readonly hostAgents?: ReadonlyArray<"claude" | "codex" | "opencode">;
   readonly claude: { readonly instanceId: string; readonly connected: boolean } | null;
   /** Any of the member's own agents (Claude, Codex, OpenCode, Gemini) is connected. */
   readonly agentConnected?: boolean;
@@ -64,11 +76,13 @@ export interface LpSession {
 export interface LpWorkspaceMember {
   readonly user: LpUser;
   readonly role: LpWorkspaceRole;
+  /** Presence/message colour slot 0..7 (admin-set or the stable default). */
+  readonly color?: number;
 }
 
 export interface LpProjectMember {
   readonly user: LpUser;
-  readonly role: "owner" | "member";
+  readonly role: "owner" | "member" | "viewer";
 }
 
 export type LpSyncState = "not_synced" | "syncing" | "synced" | "conflict" | "error";
@@ -195,6 +209,16 @@ export interface LpLedgerConflict {
   readonly reason: string;
   readonly state: "open" | "negotiating" | "resolved";
   readonly negotiationId: string | null;
+  /** Each party's last written version of the file, saved by the host when the overlap was seen. */
+  readonly preserved?: ReadonlyArray<{
+    readonly threadId: string;
+    readonly name: string;
+    readonly path: string;
+    readonly bytes: number;
+    readonly text: boolean;
+  }>;
+  /** No git remote: Merge both writes every saved version into the file. */
+  readonly localMerge?: boolean;
 }
 
 export type LpNegotiationChoice = "accept" | "mine" | "theirs" | "both";
@@ -245,13 +269,6 @@ export interface LpThreadLedger {
   readonly notices: ReadonlyArray<LpLedgerMessage>;
   readonly conflicts: ReadonlyArray<LpLedgerConflict>;
   readonly negotiations: ReadonlyArray<LpNegotiation>;
-}
-
-/** An achievement a request just unlocked, as the server reports it. */
-export interface LpUnlockedBadge {
-  readonly id: string;
-  readonly name: string;
-  readonly points: number;
 }
 
 export type LpAgentKind = "claude" | "codex" | "opencode" | "gemini";
@@ -373,6 +390,8 @@ export const lpApi = {
     lpRequest("/api/lp/workspaces/members", { workspaceId, user, role }),
   setRole: (workspaceId: string, userId: string, role: LpWorkspaceRole) =>
     lpRequest("/api/lp/workspaces/members/role", { workspaceId, userId, role }),
+  setPersonColor: (userId: string | null, color: number) =>
+    lpRequest("/api/lp/people/color", { userId, color }),
   removeMember: (workspaceId: string, userId: string) =>
     lpRequest("/api/lp/workspaces/members/remove", { workspaceId, userId }),
   invite: (workspaceId: string) =>
@@ -482,6 +501,10 @@ export const lpApi = {
     lpRequest("/api/lp/ledger/seen", { threadId, messageIds }),
   proposeMerge: (input: { threadId: string; conflictId?: string }) =>
     lpRequest<{ negotiation: LpNegotiation }>("/api/lp/ledger/merge", input),
+  keepBoth: (input: { threadId: string; conflictId: string }) =>
+    lpRequest<{ files: ReadonlyArray<string> }>("/api/lp/ledger/keep-both", input),
+  restoreVersion: (input: { threadId: string; conflictId: string; versionThreadId: string }) =>
+    lpRequest<{ path: string }>("/api/lp/ledger/restore", input),
   decideNegotiation: (input: {
     negotiationId: string;
     threadId: string;
@@ -529,37 +552,6 @@ export const lpApi = {
     },
   ) => lpRequest<{ expert: LpExpertAdmin }>("/api/lp/admin/experts", expert),
   adminRemoveExpert: (id: string) => lpRequest("/api/lp/admin/experts/remove", { id }),
-  packs: (projectId: string) =>
-    lpRequest<{ projectId: string; packs: ReadonlyArray<LpPackView> }>(
-      `/api/lp/packs?projectId=${encodeURIComponent(projectId)}`,
-    ),
-  saveThreadAsPack: (input: {
-    threadId: string;
-    name?: string;
-    prompts?: ReadonlyArray<string>;
-    appItems?: ReadonlyArray<{
-      kind: "app-object" | "timeline-marker";
-      name: string;
-      detail?: string;
-    }>;
-  }) =>
-    lpRequest<LpPackView & { unlocked?: ReadonlyArray<LpUnlockedBadge> }>(
-      "/api/lp/packs/save",
-      input,
-    ),
-  // Not `usePack`: the React Compiler reads a `use` prefix as a hook call.
-  handOffPack: (input: {
-    projectId: string;
-    packId: string;
-    targetThreadId?: string;
-    targetProjectId?: string;
-  }) =>
-    lpRequest<{
-      copied: boolean;
-      delivered: string | null;
-      targetProjectId: string;
-      unlocked?: ReadonlyArray<LpUnlockedBadge>;
-    }>("/api/lp/packs/use", input),
 };
 
 export type LpExpertAvailability = "available" | "busy" | "away";
@@ -615,12 +607,6 @@ export interface LpExpertRequest {
     revokedAtMs: number | null;
   }>;
   readonly grantActive: boolean;
-}
-
-/** A saved pack and the text an agent reads from its context. */
-export interface LpPackView {
-  readonly pack: RecipeManifest;
-  readonly text: string | null;
 }
 
 /** The text a teammate pastes into their own Claude Code or Codex to join. */

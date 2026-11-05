@@ -4,15 +4,14 @@ import { create } from "zustand";
 import { lpRequest } from "./api";
 
 /**
- * Feature access (web side). The core workspace is open to everyone; gated features (packs,
- * talent, apps, the freelancer jobs board) show only for accounts that have them. Gated UI is
+ * Feature access (web side). The core workspace is open to everyone; gated features (talent, apps, the freelancer jobs board) show only for accounts that have them. Gated UI is
  * simply absent otherwise: no locked teasers.
  *
  *   const canUseApps = useFeature("apps");
  *   if (!canUseApps) return null;
  */
 
-export type LpFeature = "packs" | "talent" | "apps" | "freelancer_jobs" | "cloud" | "cloud_agents";
+export type LpFeature = "talent" | "apps" | "freelancer_jobs" | "cloud" | "cloud_agents";
 
 export interface LpFeatureState {
   readonly loaded: boolean;

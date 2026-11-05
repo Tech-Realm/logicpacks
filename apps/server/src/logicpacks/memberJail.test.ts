@@ -15,6 +15,7 @@ import {
   MEMBER_DENIED_METHODS,
   MEMBER_TERMINAL_METHODS,
   memberRootDir,
+  isWithin,
   resolveMemberPath,
   usesTildeOutsideHomeMethods,
 } from "./memberJail.ts";
@@ -72,6 +73,7 @@ describe("resolveMemberPath", () => {
     expect(resolveMemberPath("../../etc", "/srv", ana)).toBeNull();
     expect(resolveMemberPath(`${ana}/../bo`, null, ana)).toBeNull();
     expect(resolveMemberPath("~root/.ssh", null, ana)).toBeNull();
+    // A drive path means nothing on a host without drives.
     expect(resolveMemberPath("C:\\Windows", null, ana)).toBeNull();
     expect(resolveMemberPath("\\\\host\\share", null, ana)).toBeNull();
   });
@@ -116,6 +118,66 @@ describe("jailAllows", () => {
     expect(jailAllows(jail, NodePath.join(sharedWorktree, "src"))).toBe(true);
     expect(jailAllows(jail, secretWorktree)).toBe(false);
     expect(jailAllows(jail, worktrees)).toBe(false);
+  });
+});
+
+/**
+ * Regression: a member of a Windows host got "That folder is outside your space and the projects
+ * shared with you" on every file list. The jail refused every `C:\\...` path outright and compared
+ * roots with "/" only, so a project at `C:\\Users\\me\\lp-demo` was never reachable. These run the
+ * jail with `path.win32` (the fake drive does not exist here, so realpath falls back to the path).
+ */
+describe("a Windows host", () => {
+  const win = NodePath.win32;
+  const winRoot = "C:\\Users\\WIN11-HOMELAB\\.logicpacks\\members\\0123456789abcdef";
+  const project = "C:\\Users\\WIN11-HOMELAB\\Projects\\lp-demo";
+  const winJail = makeMemberJail({
+    memberRoot: winRoot,
+    projectRoots: [project],
+    worktreesDir: "C:\\Users\\WIN11-HOMELAB\\.logicpacks\\worktrees",
+    api: win,
+  });
+  const violation = (payload: unknown) => firstJailViolation(winJail, payload);
+
+  it("lets a member list files of a project shared with them", () => {
+    expect(violation({ cwd: project })).toBeNull();
+    expect(violation({ cwd: project, relativePath: "src\\index.ts" })).toBeNull();
+    expect(violation({ cwd: `${project}\\src`, partialPath: "a" })).toBeNull();
+    expect(violation({ projectPath: project, paths: [`${project}\\README.md`] })).toBeNull();
+  });
+
+  it("accepts forward slashes, any drive-letter case and the extended prefix", () => {
+    expect(violation({ cwd: "C:/Users/WIN11-HOMELAB/Projects/lp-demo/src" })).toBeNull();
+    expect(violation({ cwd: "c:\\users\\win11-homelab\\projects\\LP-DEMO" })).toBeNull();
+    expect(violation({ cwd: `\\\\?\\${project}` })).toBeNull();
+    expect(violation({ cwd: `${project}\\` })).toBeNull();
+  });
+
+  it("still keeps them out of everything else", () => {
+    expect(violation({ cwd: "C:\\Users\\WIN11-HOMELAB" })).not.toBeNull();
+    expect(violation({ cwd: "C:\\Windows\\System32" })).not.toBeNull();
+    expect(violation({ cwd: "D:\\Users\\WIN11-HOMELAB\\Projects\\lp-demo" })).not.toBeNull();
+    expect(violation({ cwd: `${project}-secret` })).not.toBeNull();
+    expect(violation({ cwd: `${project}\\..\\other` })).not.toBeNull();
+    expect(violation({ cwd: "\\\\server\\share\\lp-demo" })).not.toBeNull();
+    expect(violation({ cwd: "\\\\?\\UNC\\server\\share" })).not.toBeNull();
+    expect(violation({ cwd: "\\Users\\WIN11-HOMELAB\\Projects\\lp-demo" })).not.toBeNull();
+    expect(violation({ cwd: "C:lp-demo" })).not.toBeNull();
+  });
+
+  it("resolves ~ and relative values against the member root", () => {
+    expect(resolveMemberPath("~", null, winRoot, win)).toBe(winRoot);
+    expect(resolveMemberPath("~\\app", null, winRoot, win)).toBe(`${winRoot}\\app`);
+    expect(resolveMemberPath("~/app", null, winRoot, win)).toBe(`${winRoot}\\app`);
+    expect(resolveMemberPath("src\\a.ts", project, winRoot, win)).toBe(`${project}\\src\\a.ts`);
+  });
+
+  it("compares roots the way Windows does", () => {
+    expect(isWithin("C:\\a\\b", "c:/A/B/c", win)).toBe(true);
+    expect(isWithin("C:\\a\\b", "C:\\a\\bc", win)).toBe(false);
+    expect(isWithin("C:\\", "C:\\a", win)).toBe(true);
+    expect(isWithin("C:\\a", "D:\\a", win)).toBe(false);
+    expect(isWithin("C:\\a", "a\\b", win)).toBe(false);
   });
 });
 

@@ -280,6 +280,11 @@ describe("secrets", () => {
     }
     expect(relativeToRoot("/srv/p", "/srv/p/.env")).toBe(".env");
     expect(relativeToRoot("/srv/p", "/etc/passwd")).toBeNull();
+    // A Windows host: drive paths, either separator, any case; the answer always uses "/".
+    expect(relativeToRoot("C:\\p", "C:\\p\\.env")).toBe(".env");
+    expect(relativeToRoot("C:\\p", "c:/P/apps/api/.env")).toBe("apps/api/.env");
+    expect(relativeToRoot("C:\\p", "C:\\other\\.env")).toBeNull();
+    expect(relativeToRoot("C:\\p", "C:\\pp\\.env")).toBeNull();
     expect(guardedFilePath({ cwd: "/srv/p", relativePath: ".env" })).toEqual({
       cwd: "/srv/p",
       path: ".env",

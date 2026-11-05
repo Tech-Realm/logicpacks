@@ -23,12 +23,13 @@ import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Badge } from "../ui/badge";
 import { LpRecipeControl } from "../../logicpacks/RecipeControls";
 import { LpShareProjectButton, LpSyncBadge } from "../../logicpacks/SyncControls";
+import { OverflowToolbar } from "./OverflowToolbar";
+import { useChatHeaderBudget } from "./useChatHeaderBudget";
 import { LpProjectFilesButtons } from "../../logicpacks/ProjectFilesControls";
 import { LpBranchThreadButton, LpWhoIsWorkingButton } from "../../logicpacks/LedgerControls";
 import { LpRequestAssistanceButton } from "../../logicpacks/ExpertsControls";
 import { LpVettedHelpButton } from "../../logicpacks/ExternalControls";
 import { LpGoalsButton } from "../../logicpacks/GoalsControls";
-import { LpSavePackButton } from "../../logicpacks/PackControls";
 import { LpProjectPeople } from "../../logicpacks/PeopleControls";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
@@ -65,8 +66,6 @@ interface ChatHeaderProps {
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
-  /** The thread's prompts, oldest first, read when it is saved as a pack. */
-  getThreadPrompts?: (() => ReadonlyArray<string>) | undefined;
 }
 
 function resolveRenameCommit(input: {
@@ -94,12 +93,12 @@ export const ChatHeader = memo(function ChatHeader({
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
-  getThreadPrompts,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
+  const headerBudget = useChatHeaderBudget(breadcrumbContainerRef);
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
   const canOperateThread = useEnvironmentScope(
@@ -293,13 +292,15 @@ export const ChatHeader = memo(function ChatHeader({
       ref={breadcrumbContainerRef}
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-10" : "pr-44",
+        // Until the titlebar controls are measured, reserve their usual room.
+        headerBudget === null && (rightPanelOpen ? "pr-10" : "pr-44"),
       )}
+      style={headerBudget === null ? undefined : { paddingRight: headerBudget.inset }}
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
+        className="@container/crumbs flex-1 overflow-clip [overflow-clip-margin:2px]"
       >
         {activeProject ? (
           <WorkspaceBreadcrumbItem className="shrink">
@@ -328,11 +329,14 @@ export const ChatHeader = memo(function ChatHeader({
               </Tooltip>
               {activeProject.isScratch ? null : (
                 <>
-                  <LpSyncBadge
-                    projectId={activeProject.id}
-                    environmentId={activeThreadEnvironmentId}
-                    title={activeProjectName ?? activeProject.title}
-                  />
+                  {/* The room runs out from the right: the thread title goes first, then the sync chip. */}
+                  <span className="contents @max-[130px]/crumbs:hidden">
+                    <LpSyncBadge
+                      projectId={activeProject.id}
+                      environmentId={activeThreadEnvironmentId}
+                      title={activeProjectName ?? activeProject.title}
+                    />
+                  </span>
                   <LpRecipeControl
                     projectId={activeProject.id}
                     environmentId={activeThreadEnvironmentId}
@@ -377,7 +381,10 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+        <WorkspaceBreadcrumbItem
+          current
+          className="min-w-10 flex-1 @max-[200px]/crumbs:hidden"
+        >
           {renamingTitle !== null ? (
             <input
               autoFocus
@@ -456,63 +463,92 @@ export const ChatHeader = memo(function ChatHeader({
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
       {activeProject && !activeProject.isScratch ? (
-        // LogicPacks: the right side of the bar belongs to people, then one tool tray.
-        <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag] max-sm:[&_[data-testid=lp-project-people]]:hidden">
-          <LpProjectPeople projectId={activeProject.id} environmentId={activeThreadEnvironmentId} />
-          <LpShareProjectButton
-            projectId={activeProject.id}
-            environmentId={activeThreadEnvironmentId}
-            title={activeProjectName ?? activeProject.title}
-          />
-          <LpProjectFilesButtons
-            projectId={activeProject.id}
-            environmentId={activeThreadEnvironmentId}
-            title={activeProjectName ?? activeProject.title}
-          />
-          {isServerThread ? (
-            <div
-              role="toolbar"
-              aria-label="Project tools"
-              data-lp-tool-tray=""
-              className="flex items-center rounded-pill border border-hairline p-0.5 empty:hidden [&_button]:rounded-pill"
-            >
-              <LpWhoIsWorkingButton
-                projectId={activeProject.id}
-                environmentId={activeThreadEnvironmentId}
-                activeThreadId={activeThreadId}
-                onOpenThread={onOpenThread}
-              />
-              <LpBranchThreadButton
-                threadId={activeThreadId}
-                environmentId={activeThreadEnvironmentId}
-                onOpenThread={onOpenThread}
-              />
-              <LpSavePackButton
-                projectId={activeProject.id}
-                environmentId={activeThreadEnvironmentId}
-                threadId={activeThreadId}
-                threadTitle={activeThreadTitle}
-                getThreadPrompts={getThreadPrompts}
-              />
-              <LpRequestAssistanceButton
-                projectId={activeProject.id}
-                environmentId={activeThreadEnvironmentId}
-                threadId={activeThreadId}
-              />
-              <LpVettedHelpButton
-                projectId={activeProject.id}
-                environmentId={activeThreadEnvironmentId}
-                threadId={activeThreadId}
-              />
-              <LpGoalsButton
-                projectId={activeProject.id}
-                environmentId={activeThreadEnvironmentId}
-                threadId={activeThreadId}
-                onOpenThread={onOpenThread}
-              />
-            </div>
-          ) : null}
-        </div>
+        // LogicPacks: the right side of the bar belongs to people, then one tool tray. Controls
+        // that do not fit move, least important first, into the "more" tray.
+        <OverflowToolbar
+          label="More project controls"
+          testId="lp-header-controls"
+          className="[-webkit-app-region:no-drag]"
+          budget={headerBudget?.budget ?? null}
+          items={[
+            {
+              id: "people",
+              priority: 4,
+              node: (
+                <LpProjectPeople
+                  projectId={activeProject.id}
+                  environmentId={activeThreadEnvironmentId}
+                />
+              ),
+            },
+            {
+              id: "share",
+              priority: 1,
+              node: (
+                <LpShareProjectButton
+                  projectId={activeProject.id}
+                  environmentId={activeThreadEnvironmentId}
+                  title={activeProjectName ?? activeProject.title}
+                />
+              ),
+            },
+            {
+              id: "files",
+              priority: 3,
+              node: (
+                <LpProjectFilesButtons
+                  projectId={activeProject.id}
+                  environmentId={activeThreadEnvironmentId}
+                  title={activeProjectName ?? activeProject.title}
+                />
+              ),
+            },
+            ...(isServerThread
+              ? [
+                  {
+                    id: "tools",
+                    priority: 2,
+                    node: (
+                      <div
+                        role="toolbar"
+                        aria-label="Project tools"
+                        data-lp-tool-tray=""
+                        className="flex items-center rounded-pill border border-hairline p-0.5 empty:hidden [&_button]:rounded-pill"
+                      >
+                        <LpWhoIsWorkingButton
+                          projectId={activeProject.id}
+                          environmentId={activeThreadEnvironmentId}
+                          activeThreadId={activeThreadId}
+                          onOpenThread={onOpenThread}
+                        />
+                        <LpBranchThreadButton
+                          threadId={activeThreadId}
+                          environmentId={activeThreadEnvironmentId}
+                          onOpenThread={onOpenThread}
+                        />
+                        <LpRequestAssistanceButton
+                          projectId={activeProject.id}
+                          environmentId={activeThreadEnvironmentId}
+                          threadId={activeThreadId}
+                        />
+                        <LpVettedHelpButton
+                          projectId={activeProject.id}
+                          environmentId={activeThreadEnvironmentId}
+                          threadId={activeThreadId}
+                        />
+                        <LpGoalsButton
+                          projectId={activeProject.id}
+                          environmentId={activeThreadEnvironmentId}
+                          threadId={activeThreadId}
+                          onOpenThread={onOpenThread}
+                        />
+                      </div>
+                    ),
+                  },
+                ]
+              : []),
+          ]}
+        />
       ) : null}
     </div>
   );

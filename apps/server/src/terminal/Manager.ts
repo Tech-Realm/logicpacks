@@ -1,6 +1,10 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
 import * as NodeCrypto from "node:crypto";
 
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a one-shot sync check that sandbox-exec exists.
+import * as NodeFS from "node:fs";
+
+import { memberTerminalLaunch } from "../logicpacks/memberTerminalRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -2405,14 +2409,34 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       env: spawnEnv,
       survivesRestart: true,
     });
+    // A member's terminal (LogicPacks, Compute zone on) gets a scrubbed environment and, on
+    // macOS, a Seatbelt profile limiting writes. The host's own terminals are never touched.
+    const memberLaunch = memberTerminalLaunch({
+      threadId: session.threadId,
+      terminalId: session.terminalId,
+      command: launch.command,
+      args: launch.args,
+      env: spawnEnv,
+      platform,
+      exists: NodeFS.existsSync,
+    });
+    // FAIL CLOSED: a member's terminal that must be sandboxed never starts unsandboxed.
+    if (memberLaunch !== null && "error" in memberLaunch) {
+      return yield* new PtyAdapter.PtySpawnError({
+        adapter: "terminal-manager",
+        cause: new Error(memberLaunch.error),
+      });
+    }
     const attempt = yield* Effect.result(
       options.ptyAdapter.spawn({
-        shell: launch.command,
-        ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
+        shell: memberLaunch?.command ?? launch.command,
+        ...((memberLaunch?.args ?? launch.args).length > 0
+          ? { args: [...(memberLaunch?.args ?? launch.args)] }
+          : {}),
         cwd: session.cwd,
         cols: session.cols,
         rows: session.rows,
-        env: spawnEnv,
+        env: memberLaunch?.env ?? spawnEnv,
       }),
     );
 

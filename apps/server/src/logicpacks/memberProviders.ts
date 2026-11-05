@@ -54,7 +54,13 @@ export const threadRunWithoutSelection = (payload: unknown): string | null => {
   return typeof threadId === "string" && threadId.length > 0 ? threadId : null;
 };
 
-export type InstanceDecision = "allow" | "granted" | "someone_elses" | "needs_own_login";
+export type InstanceDecision =
+  | "allow"
+  | "granted"
+  | "someone_elses"
+  | "needs_own_login"
+  /** The host's agent, but this person's AI zone does not include it. */
+  | "ai_off";
 
 /**
  * Members never run on another member's login, and by default not on the operator's
@@ -67,11 +73,17 @@ export const decideInstanceUse = (input: {
   readonly userId: string;
   readonly membersMustUseOwn: boolean;
   readonly granted?: boolean | undefined;
+  /**
+   * Whether the member's AI zone lends them this host agent. Omitted: not asked (callers that
+   * predate zones). Only consulted for the host's own agents; their own login is always theirs.
+   */
+  readonly hostAgentAllowed?: boolean | undefined;
 }): InstanceDecision => {
   if (isOwnMemberInstance(input.instanceId, input.userId)) return "allow";
   if (input.granted === true) return "granted";
   if (isMemberInstanceId(input.instanceId)) return "someone_elses";
-  return input.membersMustUseOwn ? "needs_own_login" : "allow";
+  if (input.membersMustUseOwn) return "needs_own_login";
+  return input.hostAgentAllowed === false ? "ai_off" : "allow";
 };
 
 /**

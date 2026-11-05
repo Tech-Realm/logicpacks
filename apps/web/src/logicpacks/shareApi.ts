@@ -1,3 +1,4 @@
+import type { LpAccessOverview } from "./accessApi";
 import { lpRequest, type LpProjectMember, type LpUser } from "./api";
 
 /** Project sharing beyond existing accounts: pending invites and the share link. */
@@ -28,6 +29,8 @@ export interface LpShareOverview {
   readonly invites: ReadonlyArray<LpPendingInvite>;
   readonly link: LpShareLink | null;
   readonly joins: ReadonlyArray<{ readonly user: LpUser; readonly joinedAt: string }>;
+  /** Owners: the default, every seat, requests and the trail. Members: their own seat. */
+  readonly access?: LpAccessOverview;
   readonly emailMode?: "apps-script" | "smtp" | "log";
 }
 

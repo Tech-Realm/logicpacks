@@ -1,7 +1,22 @@
+// @effect-diagnostics nodeBuiltinImport:off -- builds the sandbox profile folder path.
+import * as NodePath from "node:path";
 import {
+  ACCESS_AGENTS,
+  AGENT_LABELS,
+  DEFAULT_MODEL_BY_PROVIDER,
+  agentForDriver,
+  canCompute,
+  canManageProjects,
+  isUnrestricted,
+  sharedFolders,
+  canReadSecrets,
+  canUseAgent,
   EnvironmentAuthorizationError,
   type OrchestrationV2ShellStreamItem,
   type ProjectId,
+  PROJECTS_OFF_MESSAGE,
+  SECRET_FILE_MESSAGE,
+  type TerminalMetadataStreamEvent,
   type ThreadId,
 } from "@logicpacks/contracts";
 import { FeatureAccess } from "./FeatureAccess.ts";
@@ -13,6 +28,19 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { requiredScopeForRpcMethod } from "../auth/RpcAuthorization.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { READ_ONLY_MESSAGE, viewerMayCall } from "./readOnlyRpc.ts";
+import {
+  captureFirstCommand,
+  forgetTerminal,
+  ownerOfTerminal,
+  registerTerminal,
+  terminalRef,
+  terminalsOf,
+} from "./memberTerminalRegistry.ts";
+import { registerMemberMessage } from "./runLimits.ts";
+import { aiOffMessage, refusalFor, rpcNeeds, TERMINAL_METHODS } from "./zoneGate.ts";
+import { OUTSIDE_FOLDERS_MESSAGE } from "./zoneHttp.ts";
 import { ExpertsService } from "./ExpertsService.ts";
 import {
   externalInstanceAllowed,
@@ -30,19 +58,24 @@ import { ExternalTeamService } from "./ExternalTeamService.ts";
 import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { LogicPacksSync } from "./LogicPacksSync.ts";
 import {
+  collectPayloadPaths,
   ensureMemberRoot,
   firstJailViolation,
+  folderAllows,
   makeMemberJail,
+  resolveMemberPath,
+  resolveSharedFolders,
   MEMBER_DENIED_METHODS,
-  MEMBER_TERMINAL_METHODS,
   usesTildeOutsideHomeMethods,
   worktreeProjectRoot,
 } from "./memberJail.ts";
+import { dispatchedMessage, messageAuthorStore } from "./messageAuthors.ts";
 import { syncMemberSandbox } from "./memberSandbox.ts";
 import { isSyncIntent } from "./syncGit.ts";
 import { revealClaimedProject } from "./reveal.ts";
 import {
   decideInstanceUse,
+  isMemberInstanceId,
   isOwnMemberInstance,
   providersForMember,
   selectedInstanceId,
@@ -84,6 +117,24 @@ export interface MemberFence {
   readonly filterShellItem: (
     item: OrchestrationV2ShellStreamItem,
   ) => OrchestrationV2ShellStreamItem | null;
+  /** Terminal metadata: a member sees only the terminals they opened. Null drops the event. */
+  readonly filterTerminalEvent: (
+    event: TerminalMetadataStreamEvent,
+  ) => TerminalMetadataStreamEvent | null;
+  /**
+   * The settings a member's client gets: the default model is the host's Claude when their AI
+   * zone lends it (their own Claude otherwise), never whatever the host happens to default to.
+   */
+  readonly withMemberDefaults: <S extends { readonly defaultModelSelection?: unknown }>(
+    settings: S,
+    providers: ReadonlyArray<{
+      readonly instanceId: string;
+      readonly driver: string;
+      readonly enabled?: boolean;
+      readonly installed?: boolean;
+      readonly models?: ReadonlyArray<{ readonly slug: string }>;
+    }>,
+  ) => S;
   /** The provider logins this session may run turns on. */
   readonly filterProviders: <P extends { readonly instanceId: string }>(
     providers: ReadonlyArray<P>,
@@ -106,7 +157,7 @@ const attachToCurrentWorkspace = (
   actorUserId: string | null,
   projectId: string,
 ) => {
-  const workspaceId = access.currentWorkspaceId(actorUserId);
+  const workspaceId = access.creationWorkspaceId(actorUserId);
   const attach =
     workspaceId === null
       ? Effect.void
@@ -173,6 +224,20 @@ export const syncIntentTarget = (
     : null;
 };
 
+/** Remembers who sent a dispatched user message (null = host owner). */
+const recordAuthor = (
+  stateDir: string | null,
+  userId: string | null,
+  method: string,
+  payload: unknown,
+  result: unknown,
+): Effect.Effect<void> =>
+  Effect.sync(() => {
+    if (stateDir === null) return;
+    const sent = dispatchedMessage(method, payload, result);
+    if (sent !== null) messageAuthorStore(stateDir).record(sent.threadId, sent.messageId, userId);
+  });
+
 /**
  * The operator is never fenced in, but still works in a current workspace:
  * what they create joins it, and their lists follow it once they pick one.
@@ -180,18 +245,35 @@ export const syncIntentTarget = (
 const makeOperatorFence = (
   access: LogicPacksAccess["Service"],
   onIntent: (method: string, payload: unknown) => Effect.Effect<void>,
+  stateDir: string | null,
 ): MemberFence => {
   const inView = (projectId: string) => access.inView(null, projectId);
   return {
     userId: null,
     homeDirectory: null,
     canSeeProject: () => true,
-    check: () => Effect.void,
+    // The host's own terminals are registered so a member can never attach to one by id.
+    check: (method, payload) =>
+      Effect.sync(() => {
+        if (method !== "terminal.open" && method !== "terminal.attach") return;
+        const ref = terminalRef(payload);
+        if (ref?.terminalId != null) {
+          registerTerminal({
+            userId: null,
+            projectId: null,
+            threadId: ref.threadId,
+            terminalId: ref.terminalId,
+          });
+        }
+      }),
     afterSuccess: (method, payload, result) => {
       const projectId = createdProjectId(method, payload, result);
       return (
         projectId === null ? Effect.void : attachToCurrentWorkspace(access, null, projectId)
-      ).pipe(Effect.andThen(onIntent(method, payload)));
+      ).pipe(
+        Effect.andThen(recordAuthor(stateDir, null, method, payload, result)),
+        Effect.andThen(onIntent(method, payload)),
+      );
     },
     mapResult: (method, result) =>
       MEMBER_FILTERED_LIST_METHODS.has(method) && access.currentWorkspaceId(null) !== null
@@ -200,6 +282,8 @@ const makeOperatorFence = (
     threadRedactor: () => Effect.succeed(null),
     filterShellItem: (item) =>
       access.currentWorkspaceId(null) === null ? item : filterShellItemForMember(item, inView),
+    filterTerminalEvent: (event) => event,
+    withMemberDefaults: (settings) => settings,
     filterProviders: (providers) => providers,
   };
 };
@@ -215,16 +299,31 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
     threads,
     userId,
   );
-  if (userId === null) return makeOperatorFence(accessOption.value, onIntent);
+  if (userId === null) {
+    const operatorConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+    return makeOperatorFence(
+      accessOption.value,
+      onIntent,
+      operatorConfig._tag === "Some" ? operatorConfig.value.stateDir : null,
+    );
+  }
   const access = accessOption.value;
   const expertsOption = yield* Effect.serviceOption(ExpertsService);
   const grants = expertsOption._tag === "Some" ? expertsOption.value : null;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const config = yield* ServerConfig.ServerConfig;
+  const stateDir = config.stateDir;
+  const instanceRegistry = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
   // Off only when the operator chooses to lend their own provider logins to every member.
+  // On a laptop host (the desktop app) members have no way to connect their own login without a
+  // cloud code, so they run on the agents installed on the host's machine, which is the point of
+  // host-based sharing. Cloud hosts keep requiring each member's own login.
+  const onCloudHost = /^(1|true|yes|on)$/i.test((process.env.LOGICPACKS_CLOUD_HOST ?? "").trim());
   const membersMustUseOwn = yield* Config.Boolean("LOGICPACKS_MEMBERS_OWN_PROVIDERS").pipe(
-    Config.withDefault(true),
-    Effect.orElseSucceed(() => true),
+    Config.withDefault(onCloudHost),
+    Effect.orElseSucceed(() => onCloudHost),
   );
 
   const memberRoot = ensureMemberRoot(config.baseDir, userId);
@@ -244,12 +343,13 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
     const direct = lastVisible.find((project) => pathIsWithin(project.root, cwd));
     if (direct !== undefined) return direct;
     const root = worktreeProjectRoot(cwd, config.worktreesDir);
-    return root === null ? undefined : lastVisible.find((project) => project.root === root);
+    // worktreeProjectRoot returns a real path: compare the way the host does (Windows: case, slashes).
+    return root === null
+      ? undefined
+      : lastVisible.find(
+          (project) => pathIsWithin(project.root, root) && pathIsWithin(root, project.root),
+        );
   };
-  // A thread's terminal is shared by everyone in the thread and runs as the host, so members
-  // get none until terminals are owned per member.
-  const terminalsAllowed = false;
-
   const canSee = (projectId: string) => access.roleOf(userId, projectId) !== null;
   // Lists and the live sidebar follow the current workspace; commands only need access.
   const inView = (projectId: string) => access.inView(userId, projectId);
@@ -259,6 +359,40 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
       Effect.map((shell) => shell?.projectId ?? null),
       Effect.orElseSucceed(() => null),
     );
+
+  /** Which lendable agent a provider instance is: by driver when the registry knows it. */
+  const agentOfInstance = Effect.fn("logicpacks.memberFence.agentOfInstance")(function* (
+    instanceId: string,
+  ) {
+    const fromId = agentForDriver(instanceId);
+    if (fromId !== null && /^(claude|codex|opencode)-lp-/.test(instanceId)) return fromId;
+    if (instanceRegistry._tag === "Some") {
+      const instance = yield* instanceRegistry.value
+        .getInstance(instanceId as never)
+        .pipe(Effect.orElseSucceed(() => undefined));
+      const driver = (instance as { readonly driverKind?: string } | undefined)?.driverKind;
+      if (driver !== undefined) return agentForDriver(driver);
+    }
+    return fromId;
+  });
+
+  /** The projects a call acts in: named directly, through its thread, or by the paths it names. */
+  const zoneProjects = Effect.fn("logicpacks.memberFence.zoneProjects")(function* (
+    payload: unknown,
+  ) {
+    const found = new Set<string>();
+    const targets = rpcTargets(payload);
+    for (const projectId of targets.projectIds) found.add(projectId);
+    for (const threadId of targets.threadIds) {
+      const projectId = yield* threadProject(threadId);
+      if (projectId !== null) found.add(projectId);
+    }
+    for (const path of collectPayloadPaths(payload)) {
+      const project = projectForCwd(path.base ?? path.value);
+      if (project !== undefined) found.add(project.id);
+    }
+    return [...found];
+  });
 
   const visibleProjects = Effect.gen(function* () {
     const ids = Array.from(access.visibleProjectIds(userId)) as Array<ProjectId>;
@@ -304,15 +438,36 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
     if (MEMBER_DENIED_METHODS.has(method)) {
       return yield* denied(method, "This is not available to members of a shared host.");
     }
-    if (MEMBER_TERMINAL_METHODS.has(method) && !terminalsAllowed) {
-      return yield* denied(method, "Terminals are not available to members on this host yet.");
+    // A Read only seat: reads and subscriptions pass, every change is refused where it lands.
+    // Making a project is judged for the person on this host, before any path is looked at.
+    if (rpcNeeds(method, payload).includes("projects.create") && !access.canCreateProjects(userId)) {
+      return yield* denied(method, PROJECTS_OFF_MESSAGE);
+    }
+    if (rpcNeeds(method, payload).includes("projects.manage")) {
+      for (const projectId of rpcTargets(payload).projectIds) {
+        if (!canManageProjects(access.zonesOf(userId, projectId).zones)) {
+          return yield* denied(method, PROJECTS_OFF_MESSAGE);
+        }
+      }
+    }
+    // The visible projects first: paths in a payload are matched to their project by them.
+    const visible = yield* visibleProjects;
+    lastVisible = visible;
+    if (!viewerMayCall(method, payload)) {
+      const named = rpcTargets(payload);
+      const projectIds: Array<string | null> = [...named.projectIds];
+      for (const threadId of named.threadIds) projectIds.push(yield* threadProject(threadId));
+      // A file call names its project by its folder.
+      for (const projectId of yield* zoneProjects(payload)) projectIds.push(projectId);
+      const landing = projectIds.length === 0 ? [null] : projectIds;
+      if (landing.some((projectId) => access.isReadOnly(userId, projectId))) {
+        return yield* denied(method, READ_ONLY_MESSAGE);
+      }
     }
     if (usesTildeOutsideHomeMethods(method, payload)) {
       return yield* denied(method, "Use the full folder path here.");
     }
     // Every path a member names must sit in their own space or a project shared with them.
-    const visible = yield* visibleProjects;
-    lastVisible = visible;
     if (team !== null && SECRET_GUARDED_METHODS.has(method)) {
       const target = guardedFilePath(payload);
       const project = target === null ? undefined : projectForCwd(target.cwd);
@@ -328,9 +483,17 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
     }
     // Under the sandbox their Unix user follows the same access (project groups).
     syncMemberSandbox(userId, visible, config.worktreesDir);
+    // Other folders the host chose to share with this person (absolute, outside the project).
+    const extraFolders = visible.flatMap((project) => {
+      const entries = sharedFolders(access.zonesOf(userId, project.id).zones);
+      if (entries.length === 0) return [];
+      return resolveSharedFolders(project.root, entries).folders.filter(
+        (folder) => !pathIsWithin(project.root, folder),
+      );
+    });
     const jail = makeMemberJail({
       memberRoot,
-      projectRoots: visible.map((project) => project.root),
+      projectRoots: [...visible.map((project) => project.root), ...extraFolders],
       worktreesDir: config.worktreesDir,
     });
     if (firstJailViolation(jail, payload) !== null) {
@@ -338,6 +501,169 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
         method,
         "That folder is outside your space and the projects shared with you.",
       );
+    }
+    // Access zones: what the call needs (files, compute) must be in the member's zones for the
+    // project it acts in. Read only was refused above; this is the rest of the one model.
+    const allNeeds = rpcNeeds(method, payload);
+    // Making a project is judged for the person on this host, not by one project's zones.
+    if (allNeeds.includes("projects.create") && !access.canCreateProjects(userId)) {
+      return yield* denied(method, PROJECTS_OFF_MESSAGE);
+    }
+    const needs = allNeeds.filter((need) => need !== "projects.create");
+    if (needs.length > 0) {
+      const projectIds = yield* zoneProjects(payload);
+      const scope: ReadonlyArray<string | null> =
+        projectIds.length > 0
+          ? projectIds
+          : needs.includes("compute")
+            ? [null]
+            : [];
+      for (const projectId of scope) {
+        const refusal = refusalFor(access.zonesOf(userId, projectId).zones, needs);
+        if (refusal !== null) return yield* denied(method, refusal);
+      }
+    }
+    // Files zone folders: when the host shared only some folders, every file path a file call
+    // names must sit in them. Checked on the REAL path, so a symlink or a worktree cannot lead out.
+    if (needs.includes("files.read") || needs.includes("files.write")) {
+      const entries = collectPayloadPaths(payload);
+      const isBase = (key: string) => key === "cwd" || key === "workspaceRoot" || key === "worktreePath";
+      const targets = entries.some((entry) => !isBase(entry.key))
+        ? entries.filter((entry) => !isBase(entry.key))
+        : entries;
+      for (const entry of targets) {
+        const resolved = resolveMemberPath(entry.value, entry.base, memberRoot);
+        if (typeof resolved !== "string") continue;
+        const project = projectForCwd(resolved);
+        if (project === undefined) continue;
+        const entriesOfZone = sharedFolders(access.zonesOf(userId, project.id).zones);
+        if (entriesOfZone.length === 0) continue;
+        const { folders } = resolveSharedFolders(project.root, entriesOfZone);
+        // A worktree of the project holds the same files: judge the path in the project itself.
+        const worktree = worktreeProjectRoot(resolved, config.worktreesDir);
+        let judged = resolved;
+        if (worktree !== null && !pathIsWithin(project.root, resolved)) {
+          const parts = NodePath.relative(config.worktreesDir, resolved).split(NodePath.sep).slice(2);
+          judged = NodePath.join(project.root, ...parts);
+        }
+        if (!folderAllows(folders, judged)) return yield* denied(method, OUTSIDE_FOLDERS_MESSAGE);
+      }
+    }
+    // Secret files stay hidden from a member unless the host granted them (always for vetted
+    // freelancers, who are handled below as before).
+    if (SECRET_GUARDED_METHODS.has(method)) {
+      const target = guardedFilePath(payload);
+      const project = target === null ? undefined : projectForCwd(target.cwd);
+      if (
+        target !== null &&
+        project !== undefined &&
+        !canReadSecrets(access.zonesOf(userId, project.id).zones)
+      ) {
+        const relative = relativeToRoot(target.cwd, target.path) ?? target.path;
+        if (isSecretPath(relative, patterns)) return yield* denied(method, SECRET_FILE_MESSAGE);
+      }
+    }
+    // Terminals belong to the member who opened them, and only while Compute stays on.
+    if (TERMINAL_METHODS.has(method) && method !== "subscribeTerminalMetadata") {
+      const ref = terminalRef(payload);
+      if (ref === null) return yield* denied(method, "Name the terminal.");
+      const owner = ref.terminalId === null ? undefined : ownerOfTerminal(ref.threadId, ref.terminalId);
+      const opens = method === "terminal.open" || method === "terminal.attach";
+      if (ref.terminalId === null) {
+        // A thread-wide close would also close terminals that are not theirs.
+        if (terminalsOf(userId).length === 0 || method !== "terminal.close") {
+          return yield* denied(method, "Name the terminal.");
+        }
+      } else if (owner !== undefined && owner.userId !== userId) {
+        return yield* denied(method, "That terminal belongs to someone else. Open a new one.");
+      } else if (owner === undefined && !opens) {
+        return yield* denied(method, "That terminal is not yours.");
+      }
+      const projectId = (yield* threadProject(ref.threadId)) ?? (yield* zoneProjects(payload))[0] ?? null;
+      if (ref.terminalId !== null && opens && owner === undefined) {
+        const projectRoot = lastVisible.find((project) => project.id === projectId)?.root;
+        const zones = access.zonesOf(userId, projectId).zones;
+        const unrestricted = isUnrestricted(zones);
+        const shared =
+          projectRoot === undefined
+            ? { folders: [] as ReadonlyArray<string> }
+            : resolveSharedFolders(projectRoot, sharedFolders(zones));
+        registerTerminal({
+          userId,
+          projectId,
+          threadId: ref.threadId,
+          terminalId: ref.terminalId,
+          folders: shared.folders,
+          mode: unrestricted ? "unrestricted" : "sandboxed",
+          memberHome: memberRoot,
+          stateDir: NodePath.join(config.baseDir, "sandbox-profiles"),
+        });
+        yield* access.logAccess({
+          projectId,
+          userId,
+          kind: "terminal.open",
+          detail: unrestricted
+            ? `Opened terminal ${ref.terminalId} (Unrestricted: a shell as the host's user).`
+            : `Opened terminal ${ref.terminalId} (Sandboxed: reads and writes only ${
+                sharedFolders(zones).length === 0 ? "the project" : "the shared folders"
+              } and their own home; refused to start if the sandbox cannot be applied).`,
+        });
+      }
+      if (method === "terminal.write" && owner !== undefined && owner.userId === userId) {
+        const data = (payload as { readonly data?: unknown }).data;
+        const first = typeof data === "string" ? captureFirstCommand(owner, data) : null;
+        if (first !== null) {
+          yield* access.logAccess({
+            projectId: owner.projectId,
+            userId,
+            kind: "terminal.command",
+            detail: `First command in ${owner.terminalId}: ${first}`,
+          });
+        }
+      }
+      if (method === "terminal.close") {
+        yield* access.logAccess({
+          projectId,
+          userId,
+          kind: "terminal.close",
+          detail: `Closed terminal ${ref.terminalId ?? "(all in thread)"}.`,
+        });
+        forgetTerminal(ref.threadId, ref.terminalId);
+      }
+    }
+    // Remember who sent a message before it starts a run, so the run keeps to their zones.
+    if (method === "orchestration.dispatchCommand" || method === "orchestration.launchThread") {
+      const record = payload as Record<string, unknown>;
+      const messageId =
+        method === "orchestration.dispatchCommand"
+          ? record["messageId"]
+          : (record["initialMessage"] as { readonly messageId?: unknown } | undefined)?.messageId;
+      const threadId = record["threadId"];
+      const startsRun =
+        method === "orchestration.launchThread"
+          ? record["initialMessage"] !== undefined
+          : record["type"] === "message.dispatch";
+      if (startsRun && typeof messageId !== "string") {
+        // Without an id the run could not be tied back to this member's zones.
+        return yield* denied(method, "Update the app: this message has no id.");
+      }
+      if (typeof messageId === "string") {
+        const senderProject = (yield* commandProject(payload)) ?? null;
+        const senderRoot = lastVisible.find((project) => project.id === senderProject)?.root;
+        registerMemberMessage(typeof threadId === "string" ? threadId : "", messageId, {
+          userId,
+          projectId: senderProject,
+          confine:
+            senderRoot === undefined
+              ? undefined
+              : {
+                  projectRoot: senderRoot,
+                  worktreesDir: config.worktreesDir,
+                  memberHome: memberRoot,
+                  stateDir: NodePath.join(config.baseDir, "sandbox-profiles"),
+                },
+        });
+      }
     }
     // A new project has no access row yet; it becomes the member's in afterSuccess. Its root
     // must not reach into a project somebody else has not shared.
@@ -387,7 +713,24 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
         grants === null || !grants.grantedInstanceIds(userId).has(instanceId)
           ? false
           : grants.allows(userId, instanceId, yield* commandProject(payload));
-      const decision = decideInstanceUse({ instanceId, userId, membersMustUseOwn, granted });
+      // The host's own agents are lent by the AI zone of the project this runs in.
+      const agent = yield* agentOfInstance(instanceId);
+      const aiZones = access.zonesOf(userId, (yield* commandProject(payload)) ?? null).zones;
+      const hostAgentAllowed =
+        agent === null
+          ? // Other providers (Cursor, Pi, ACP agents) are lent only with every agent allowed.
+            ACCESS_AGENTS.every((candidate) => canUseAgent(aiZones, candidate))
+          : canUseAgent(aiZones, agent);
+      const decision = decideInstanceUse({
+        instanceId,
+        userId,
+        membersMustUseOwn,
+        granted,
+        hostAgentAllowed,
+      });
+      if (decision === "ai_off") {
+        return yield* denied(method, aiOffMessage(agent === null ? null : `${AGENT_LABELS[agent]}`));
+      }
       if (decision === "someone_elses") {
         return yield* denied(method, "That provider login belongs to another member.");
       }
@@ -428,7 +771,10 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
             Effect.catch((error) => Effect.logWarning("Could not record project owner", { error })),
             Effect.andThen(attachToCurrentWorkspace(access, userId, projectId)),
           )
-    ).pipe(Effect.andThen(onIntent(method, payload)));
+    ).pipe(
+      Effect.andThen(recordAuthor(stateDir, userId, method, payload, result)),
+      Effect.andThen(onIntent(method, payload)),
+    );
   };
 
   return {
@@ -438,9 +784,18 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
     check,
     afterSuccess,
     mapResult: (method, result, payload) => {
-      const listed = MEMBER_FILTERED_LIST_METHODS.has(method)
+      const listed0 = MEMBER_FILTERED_LIST_METHODS.has(method)
         ? filterListResultForMember(result, inView)
         : result;
+      // File lists drop secret files for a member who was not granted them.
+      const cwd0 = (payload as { readonly cwd?: unknown } | undefined)?.cwd;
+      const project0 = typeof cwd0 === "string" ? projectForCwd(cwd0) : undefined;
+      const listed =
+        SECRET_FILTERED_METHODS.has(method) &&
+        project0 !== undefined &&
+        !canReadSecrets(access.zonesOf(userId, project0.id).zones)
+          ? filterSecretEntries(method, listed0, patterns)
+          : listed0;
       if (team === null) return listed;
       // Thread content anywhere for someone working as a vetted freelancer: pasted secrets redacted.
       if (THREAD_CONTENT_METHODS.has(method))
@@ -464,6 +819,54 @@ export const makeMemberFence = Effect.fn("logicpacks.makeMemberFence")(function*
       return visible !== null && team !== null && team.isExternalAnywhere(externalUser)
         ? redactDeep(visible)
         : visible;
+    },
+    withMemberDefaults: (settings, providers) => {
+      // A host default that is not one of the named agents (a custom ACP agent the host chose on
+      // purpose) is left alone: only Claude, Codex and OpenCode defaults are replaced.
+      const hostDefault = (settings.defaultModelSelection as { readonly instanceId?: unknown } | undefined)
+        ?.instanceId;
+      const hostDefaultProvider = providers.find((provider) => provider.instanceId === hostDefault);
+      if (hostDefaultProvider !== undefined && agentForDriver(hostDefaultProvider.driver) === null) {
+        return settings;
+      }
+      const claude = providers.filter(
+        (provider) =>
+          agentForDriver(provider.driver) === "claude" &&
+          provider.enabled !== false &&
+          provider.installed !== false,
+      );
+      const own = claude.find((provider) => isOwnMemberInstance(provider.instanceId, userId));
+      const host = claude.find((provider) => !isMemberInstanceId(provider.instanceId));
+      const lent =
+        host !== undefined &&
+        !membersMustUseOwn &&
+        Array.from(access.visibleProjectIds(userId)).some((projectId) =>
+          canUseAgent(access.zonesOf(userId, projectId).zones, "claude"),
+        );
+      // Host's Claude when lent, else their own, else leave the host's default alone.
+      const pick = lent ? host : own;
+      if (pick === undefined) return settings;
+      const model =
+        pick.models?.find((candidate) => candidate.slug === DEFAULT_MODEL_BY_PROVIDER["claudeAgent" as never])
+          ?.slug ?? pick.models?.[0]?.slug;
+      if (model === undefined) return settings;
+      return { ...settings, defaultModelSelection: { instanceId: pick.instanceId, model } };
+    },
+    filterTerminalEvent: (event) => {
+      const mine = (threadId: string, terminalId: string) =>
+        ownerOfTerminal(threadId, terminalId)?.userId === userId;
+      if (event.type === "snapshot") {
+        return {
+          ...event,
+          terminals: event.terminals.filter((terminal) =>
+            mine(terminal.threadId, terminal.terminalId),
+          ),
+        };
+      }
+      if (event.type === "upsert") {
+        return mine(event.terminal.threadId, event.terminal.terminalId) ? event : null;
+      }
+      return mine(event.threadId, event.terminalId) ? event : null;
     },
     filterProviders: (providers) =>
       providersForMember(providers, {

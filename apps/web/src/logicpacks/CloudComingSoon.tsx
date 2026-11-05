@@ -46,7 +46,7 @@ export function CloudComingSoonPage() {
             Cloud workspaces are coming soon.
           </h1>
           <p className="text-muted-foreground">
-            Download LogicPacks for Mac to work with your team now.
+            Download the LogicPacks app for Mac or Windows to work with your team now.
           </p>
         </div>
         <Button

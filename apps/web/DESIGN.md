@@ -133,8 +133,8 @@ sheet runs edge to edge.
 
 **Sidebar: the workspace.** The header is a workspace block: the mark and the workspace name,
 then a people row with everyone in the workspace as ink initials and a round Invite button at
-its end. Search is a pill field. The scripted demos (/demo/machine, /demo/packs) are
-never linked from the signed-in app; they stay reachable by direct URL for the film and landing.
+its end. Search is a pill field. The scripted demo (/demo/machine) is
+never linked from the signed-in app; it stays reachable by direct URL for the film and landing.
 The live "Any app" (/machine) sits under a "Beta" label only for accounts with the apps feature. The footer is an identity row:
 your avatar, your name and your agent's state, with Settings, Pull requests and Usage as
 plain icons after it.
@@ -142,7 +142,7 @@ plain icons after it.
 **Top bar: the room header.** The project is a pack chip, one hairline pill holding the
 project icon, its name and its sync state, followed by the thread title. The right side
 belongs to people: who is in the project (an avatar stack; people here now get a filled dot),
-Share, then one tool tray, a single pill grouping Who's working, Branch, Packs and Request
+Share, then one tool tray, a single pill grouping Who's working, Branch and Request
 assistance. The panel toggles sit last.
 
 **Thread: agent work hangs on a spine.** User turns stay right-aligned pack frames. An

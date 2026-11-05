@@ -45,12 +45,42 @@ import type {
   ProviderSelectionTransitionPlan,
 } from "./selectionTransition.ts";
 
+/**
+ * What a run may do on behalf of someone whose access to the host is limited (a member of a
+ * shared host). Adapters apply what their agent can enforce: Claude disallows tools, Codex
+ * narrows its sandbox, ACP agents have permission requests refused. Absent: no limits.
+ */
+export const ProviderAdapterV2ToolLimits = Schema.Struct({
+  /** Edit and write tools. */
+  edits: Schema.Boolean,
+  /** Shell and command tools. */
+  shell: Schema.Boolean,
+  /** Secret files are hidden from this person (Claude is told not to read them). */
+  hideSecrets: Schema.Boolean,
+  secretGlobs: Schema.Array(Schema.String),
+  /**
+   * The run must be confined to these folders by the OS (macOS Seatbelt). When set, an adapter that
+   * can sandbox its agent does, and FAILS the run if it cannot; absent: no OS confinement.
+   */
+  confinement: Schema.optional(
+    Schema.Struct({
+      folders: Schema.Array(Schema.String),
+      wholeProject: Schema.Boolean,
+      worktreesDir: Schema.String,
+      memberHome: Schema.String,
+      stateDir: Schema.String,
+    }),
+  ),
+});
+export type ProviderAdapterV2ToolLimits = typeof ProviderAdapterV2ToolLimits.Type;
+
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
+  toolLimits: Schema.optional(ProviderAdapterV2ToolLimits),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

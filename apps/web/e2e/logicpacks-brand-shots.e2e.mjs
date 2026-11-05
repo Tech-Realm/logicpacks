@@ -137,13 +137,6 @@ try {
     await shoot(page, "06c-assistance");
     await page.keyboard.press("Escape");
   }
-  if (wanted("06d-packs")) {
-    await page.getByTestId("lp-packs-open").click();
-    await page.getByTestId("lp-packs-dialog").waitFor();
-    await page.waitForTimeout(800);
-    await shoot(page, "06d-packs");
-    await page.keyboard.press("Escape");
-  }
 
   await page.getByTestId("lp-avatar").click();
   await page.waitForTimeout(300);

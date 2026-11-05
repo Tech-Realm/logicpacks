@@ -1052,7 +1052,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// +2 for the standalone lp helper (resources/lp/lp.exe and install-lp.ps1).
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 82;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -1108,6 +1109,13 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
 ] as const;
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
+] as const;
+/**
+ * The standalone lp helper (lp.exe) and the script the NSIS installer runs to put it on the
+ * user's PATH (apps/desktop/resources/installer.nsh). Resources/lp/{lp.exe,install-lp.ps1}.
+ */
+export const WINDOWS_LP_EXTRA_RESOURCES = [
+  { from: "apps/desktop/prod-resources/lp", to: "lp" },
 ] as const;
 /** lp-appctl, the app-sharing input helper; the packaged app looks for Resources/lp-appctl/lp-appctl. */
 export const MAC_APPCTL_EXTRA_RESOURCES = [
@@ -2472,6 +2480,54 @@ export const stageBrowserSecret = Effect.fn("stageBrowserSecret")(function* (inp
   );
 });
 
+/**
+ * Stages the standalone lp helper for Windows builds: LOGICPACKS_DESKTOP_LP_EXE when set (CI builds
+ * it first), otherwise compiled here with packages/helper/scripts/build-standalone.mjs (needs bun).
+ */
+export const stageWindowsHelper = Effect.fn("stageWindowsHelper")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageResourcesDir: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly appVersion: string;
+  readonly verbose: boolean;
+}) {
+  if (input.platform !== "win") return;
+  if (input.arch !== "x64") {
+    return yield* Effect.die(new Error("The standalone lp helper is built for Windows x64 only."));
+  }
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const lpDir = path.join(input.stageResourcesDir, "lp");
+  yield* fs.makeDirectory(lpDir, { recursive: true });
+  const prebuilt = process.env.LOGICPACKS_DESKTOP_LP_EXE?.trim();
+  if (prebuilt) {
+    yield* fs.copyFile(prebuilt, path.join(lpDir, "lp.exe"));
+  } else {
+    yield* runCommand(
+      ChildProcess.make(
+        "node",
+        [
+          path.join(input.repoRoot, "packages/helper/scripts/build-standalone.mjs"),
+          "--target",
+          "windows-x64",
+          "--version",
+          input.appVersion,
+          "--out",
+          lpDir,
+        ],
+        { cwd: input.repoRoot },
+      ),
+      { label: "build the standalone lp helper for Windows", verbose: input.verbose },
+    );
+    yield* fs.rename(path.join(lpDir, "lp-windows-x64.exe"), path.join(lpDir, "lp.exe"));
+  }
+  yield* fs.copyFile(
+    path.join(input.repoRoot, "packages/helper/install/app-install-lp.ps1"),
+    path.join(lpDir, "install-lp.ps1"),
+  );
+});
+
 /** Compiles lp-appctl (universal Swift binary) into the staged resources for mac builds. */
 export const stageMacAppctl = Effect.fn("stageMacAppctl")(function* (input: {
   readonly repoRoot: string;
@@ -2840,6 +2896,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "mac" ? MAC_APPCTL_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
+      ...(platform === "win" ? WINDOWS_LP_EXTRA_RESOURCES : []),
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
     ],
   };
@@ -3831,6 +3888,14 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     repoRoot,
     stageResourcesDir,
     platform: options.platform,
+    verbose: options.verbose,
+  });
+  yield* stageWindowsHelper({
+    repoRoot,
+    stageResourcesDir,
+    platform: options.platform,
+    arch: options.arch,
+    appVersion,
     verbose: options.verbose,
   });
 

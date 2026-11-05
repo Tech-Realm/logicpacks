@@ -27,8 +27,6 @@ describe("achievements", () => {
       ...EMPTY_METRICS,
       projectsSynced: 1,
       inviteesJoined: 1,
-      recipesPublished: 1,
-      recipesReused: 1,
       conflictsResolved: 1,
       threadsShared: 1,
       longestStreakDays: 7,
@@ -38,8 +36,6 @@ describe("achievements", () => {
     for (const id of [
       "first_sync",
       "first_invite_accepted",
-      "recipe_author",
-      "second_helping",
       "peacemaker",
       "in_the_open",
       "week_streak",
@@ -72,18 +68,4 @@ describe("achievements", () => {
     expect(pointsFor(["first_turn", "first_sync", "unknown"])).toBe(13);
   });
 
-  it("rewards publishing a pack and teammates reusing it", () => {
-    expect(reachedAchievementIds({ ...EMPTY_METRICS, recipesPublished: 1 })).toEqual([
-      "recipe_author",
-    ]);
-    expect(reachedAchievementIds({ ...EMPTY_METRICS, packTeammateReuses: 1 })).toEqual([
-      "passed_around",
-    ]);
-    expect(reachedAchievementIds({ ...EMPTY_METRICS, packReusesReceived: 9 })).toEqual([]);
-    expect(reachedAchievementIds({ ...EMPTY_METRICS, packReusesReceived: 10 })).toEqual([
-      "crowd_favourite",
-    ]);
-    const first = ACHIEVEMENTS.find((definition) => definition.id === "recipe_author")!;
-    expect(first.name).toBe("First pack");
-  });
 });

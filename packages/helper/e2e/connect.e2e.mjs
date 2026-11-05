@@ -90,11 +90,11 @@ function startServer() {
       env: {
         ...process.env,
         LOGICPACKS_CLOUD_HOST: "true",
+        // Cloud projects and lp assist need access-code features (cloud, talent) in production.
+        LOGICPACKS_MEMBER_FEATURES: "cloud,talent",
         LOGICPACKS_MEMBERS_OWN_PROVIDERS: "false",
         LOGICPACKS_SYNC_SECONDS: "3600",
         LOGICPACKS_TELEMETRY_ENABLED: "false",
-        // Packs are a gated feature (access codes): unlocked for both people on this host.
-        LOGICPACKS_FEATURES_PACKS: `${email("ana")},${email("omar")}`,
         LP_MOCK_LOG: mockLog,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -677,14 +677,6 @@ async function main() {
       list.out,
     );
     return `${requested.json.request.id} ${requested.json.request.status}`;
-  });
-
-  await step("lp packs save and list", async () => {
-    const saved = ana.lp(state.shop.work, "packs", "save", "Shop context", "--json");
-    expect(saved.json?.ok, saved.out);
-    const list = ana.lp(state.shop.work, "packs", "list", "--json");
-    expect(list.json?.packs?.length >= 1, list.out);
-    return saved.json.pack.id;
   });
 
   await step("lp goals: plan, confirm, Omar's milestone, done, review, approve", async () => {

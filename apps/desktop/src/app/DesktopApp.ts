@@ -41,6 +41,9 @@ import * as HostProcess from "@logicpacks/shared/HostProcess";
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
 const DESKTOP_BACKEND_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+// On Windows a test bind on 0.0.0.0 or :: raises the firewall prompt at every first launch, which a
+// standard user cannot approve. A local-only backend binds loopback, so probe only that there.
+const DESKTOP_BACKEND_PORT_PROBE_HOSTS_LOOPBACK = ["127.0.0.1"] as const;
 
 const makeDesktopRunId = Crypto.Crypto.pipe(
   Effect.flatMap((crypto) => crypto.randomUUIDv4()),
@@ -77,6 +80,7 @@ const { logInfo: logStartupInfo, logError: logStartupError } =
 
 const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(function* (
   configuredPort: Option.Option<number>,
+  probeHosts: ReadonlyArray<string> = DESKTOP_BACKEND_PORT_PROBE_HOSTS,
 ) {
   if (Option.isSome(configuredPort)) {
     return {
@@ -89,7 +93,7 @@ const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(functio
   for (let port = DEFAULT_DESKTOP_BACKEND_PORT; port <= MAX_TCP_PORT; port += 1) {
     let availableOnEveryHost = true;
 
-    for (const host of DESKTOP_BACKEND_PORT_PROBE_HOSTS) {
+    for (const host of probeHosts) {
       if (!(yield* net.canListenOnHost(port, host))) {
         availableOnEveryHost = false;
         break;
@@ -204,7 +208,12 @@ const bootstrap = Effect.gen(function* () {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
   }
 
-  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
+  const backendPortSelection = yield* resolveDesktopBackendPort(
+    environment.configuredBackendPort,
+    environment.platform === "win32" && settings.serverExposureMode !== "network-accessible"
+      ? DESKTOP_BACKEND_PORT_PROBE_HOSTS_LOOPBACK
+      : DESKTOP_BACKEND_PORT_PROBE_HOSTS,
+  );
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
     backendPortSelection.selectedByScan

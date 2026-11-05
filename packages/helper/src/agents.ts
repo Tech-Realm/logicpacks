@@ -141,6 +141,29 @@ export const writeClaudeMcp = (launch: McpLaunch | null) => {
   return commitFile(file, after) ? file : null;
 };
 
+export const claudeMcpInstalled = () => {
+  try {
+    const parsed = asRecord(JSON.parse(NodeFS.readFileSync(claudeUserConfigFile(), "utf8")));
+    return asRecord(parsed?.mcpServers)?.[MCP_NAME] !== undefined;
+  } catch {
+    return false;
+  }
+};
+
+/** Whether the registered Claude Code MCP server already starts exactly this command. */
+export const claudeMcpMatches = (launch: McpLaunch) => {
+  try {
+    const parsed = asRecord(JSON.parse(NodeFS.readFileSync(claudeUserConfigFile(), "utf8")));
+    const entry = asRecord(asRecord(parsed?.mcpServers)?.[MCP_NAME]);
+    return (
+      entry?.command === launch.command &&
+      JSON.stringify(entry?.args ?? []) === JSON.stringify([...launch.args])
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const AGENTS_START = "<!-- logicpacks:start -->";
 export const AGENTS_END = "<!-- logicpacks:end -->";
 

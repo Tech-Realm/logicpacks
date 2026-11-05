@@ -1,32 +1,32 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { ServerProvider } from "@logicpacks/contracts";
 import { CheckIcon, CopyIcon, TerminalIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
+import { resolveOnboardingProviderInstallCommand } from "../onboarding/providerReadiness.logic";
 import { useEnvironmentProviders, usePrimaryEnvironmentId } from "../state/environments";
+import { primaryServerConfigAtom } from "../state/server";
 
 /**
- * Agents on this computer: LogicPacks for Mac runs the Claude Code and Codex already installed
+ * Agents on this computer: the LogicPacks app runs the Claude Code and Codex already installed
  * and logged in here. There is no login inside the app; when a CLI is missing it shows the
- * official install command and says to log in in a terminal.
+ * official native install command for this OS (no Node or npm) and says to log in in a terminal.
  */
 const LOCAL_AGENTS = [
-  {
-    kind: "claude",
-    label: "Claude Code",
-    driver: "claudeAgent",
-    install: "curl -fsSL https://claude.ai/install.sh | bash",
-    login: "claude auth login",
-  },
-  {
-    kind: "codex",
-    label: "Codex",
-    driver: "codex",
-    install: "npm install -g @openai/codex",
-    login: "codex login",
-  },
+  { kind: "claude", label: "Claude Code", driver: "claudeAgent", login: "claude auth login" },
+  { kind: "codex", label: "Codex", driver: "codex", login: "codex login" },
 ] as const;
+
+/** The OS this app's own server runs on; before its config loads, the browser's guess. */
+export function localAgentPlatform(
+  serverOs: string | undefined,
+  userAgent: string = typeof navigator === "undefined" ? "" : navigator.userAgent,
+): "windows" | "posix" {
+  if (serverOs !== undefined) return serverOs === "windows" ? "windows" : "posix";
+  return /windows/i.test(userAgent) ? "windows" : "posix";
+}
 
 type LocalState = "ready" | "logged_out" | "missing" | "checking";
 
@@ -65,6 +65,9 @@ export function LocalAgentsPanel() {
   const primary = usePrimaryEnvironmentId();
   const byEnvironment = useEnvironmentProviders();
   const providers = primary === null ? [] : (byEnvironment.get(primary) ?? []);
+  const platform = localAgentPlatform(
+    useAtomValue(primaryServerConfigAtom)?.environment.platform.os,
+  );
   return (
     <div className="flex flex-col gap-3" data-testid="lp-local-agents">
       <p className="text-sm text-muted-foreground">
@@ -101,7 +104,13 @@ export function LocalAgentsPanel() {
             {state === "missing" ? (
               <>
                 <p className="text-xs text-muted-foreground">Install it in your terminal:</p>
-                <CopyLine text={agent.install} testId={`lp-local-install-${agent.kind}`} />
+                <CopyLine
+                  text={resolveOnboardingProviderInstallCommand(
+                    agent.driver,
+                    platform === "windows" ? "windows" : "darwin",
+                  )}
+                  testId={`lp-local-install-${agent.kind}`}
+                />
                 <p className="text-xs text-muted-foreground">Then log in in your terminal:</p>
                 <CopyLine text={agent.login} testId={`lp-local-login-${agent.kind}`} />
               </>

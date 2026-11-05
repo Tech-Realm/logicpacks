@@ -36,6 +36,8 @@ import {
   Redo2Icon,
   PencilIcon,
 } from "lucide-react";
+import { useMessageNametag } from "../../logicpacks/useMessageAuthors";
+import { presenceColor } from "../../presence/presenceLogic";
 import { Link as LinkIconNode } from "lucide";
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
@@ -399,6 +401,30 @@ function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind:
   );
 }
 
+/** Who sent this message, when the thread has more than one author. */
+function MessageNametag({ threadId, messageId }: { threadId: string | null; messageId: string }) {
+  const tag = useMessageNametag(threadId, messageId);
+  if (tag === null) return null;
+  return (
+    <span
+      data-testid="lp-msg-nametag"
+      data-user-id={tag.userId ?? "host"}
+      data-color={tag.color}
+      aria-hidden
+      className="me-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-2xs font-medium text-muted-foreground"
+      style={{
+        backgroundColor: `color-mix(in oklab, ${presenceColor(tag.color)} 14%, transparent)`,
+      }}
+    >
+      <span
+        className="size-2 rounded-full"
+        style={{ backgroundColor: presenceColor(tag.color) }}
+      />
+      {tag.name}
+    </span>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { onImageExpand, onFileOpen } = ctx;
@@ -759,6 +785,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       !row.continuesSteer ? (
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
+      <MessageNametag threadId={ctx.activeThreadId ?? null} messageId={String(row.message.id)} />
       {mediaAboveText ? (
         <div className="flex max-w-[80%] justify-end">
           {/* The heading leads the media so screen readers reach it before the images. */}

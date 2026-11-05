@@ -24,6 +24,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
+import { hostWriteAllowedForThread } from "../logicpacks/runLimits.ts";
 import {
   assertFullAccess,
   assertLiveCaller,
@@ -305,6 +306,18 @@ export const writesEnvironment = <P, A, E, R>(
         : assertNotLinked(caller, "change projects or environment settings"),
     ),
     Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
+    // A member's agent changes projects and host settings only if their zones allow it.
+    Effect.tap((caller) =>
+      caller.scope.thread === undefined || hostWriteAllowedForThread(String(caller.scope.thread.threadId))
+        ? Effect.void
+        : Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "The person driving this thread does not have Projects or Compute turned on, so it cannot change projects or host settings.",
+            }),
+          ),
+    ),
   );
   return declare(
     (params: P) => check.pipe(Effect.flatMap(() => handle(params, check))),

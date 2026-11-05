@@ -5,6 +5,7 @@
  * one-minute ticket, because browsers cannot put an Authorization header on a
  * WebSocket. `GET /api/lp/appstream/ws?ticket=` is the room's socket.
  */
+import { refuseIfReadOnly } from "./readOnly.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -96,6 +97,8 @@ interface Ticket {
   readonly subject: string;
   readonly name: string;
   readonly canHost: boolean;
+  /** A Read only member watches the shared app and never asks for control. */
+  readonly readOnly: boolean;
   readonly expiresAtMs: number;
 }
 const tickets = new Map<string, Ticket>();
@@ -153,6 +156,7 @@ const ticketRoute = HttpRouter.add(
       subject: room.subject,
       name: room.name,
       canHost: room.canHost,
+      readOnly: (yield* refuseIfReadOnly(caller, body.projectId)) !== null,
       expiresAtMs: now + TICKET_TTL_MS,
     });
     return json({
@@ -271,6 +275,7 @@ const socketRoute = HttpRouter.add(
           }
           if (message === null || typeof message !== "object" || typeof message.t !== "string")
             return;
+          if (ticket.readOnly && message.t === "control.request") return;
           appStreamHub.message(ticket.projectId, key, message);
         };
         const reader = yield* socket.reader;

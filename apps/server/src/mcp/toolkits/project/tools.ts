@@ -158,14 +158,6 @@ const ProjectNoteTool = Tool.make("lp_project_note", {
     decision: Schema.optional(Schema.String),
   }),
 }).annotate(Tool.Destructive, false);
-const ProjectPacksTool = Tool.make("lp_project_packs", {
-  ...ledgerTool,
-  description:
-    "Packs saved in this project carry context between threads and apps: ledger summary, decisions, file and app references (Blender objects, Resolve markers), workflow steps. No query lists them; query = a pack id reads one in full. Read a pack when a message says to use it.",
-  parameters: Schema.Struct({ query: Schema.optional(Schema.String) }),
-})
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
 const ProjectGoalsTool = Tool.make("lp_project_goals", {
   ...ledgerTool,
   description:
@@ -318,7 +310,6 @@ export const ProjectToolkit = Toolkit.make(
   ProjectSendToThreadTool,
   ProjectProposeMergeTool,
   ProjectNoteTool,
-  ProjectPacksTool,
   ProjectGoalsTool,
   ProjectGoalPlanTool,
   ProjectGoalUpdateTool,

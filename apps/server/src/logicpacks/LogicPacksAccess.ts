@@ -1,3 +1,4 @@
+// @effect-diagnostics preferSchemaOverJson:off -- zone rows hold the plain JSON of the accessZones.ts value set.
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no scrypt or timingSafeEqual.
 import * as NodeCrypto from "node:crypto";
 
@@ -8,6 +9,25 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { closeMemberSockets } from "./memberSockets.ts";
+import { memberSandboxSupported } from "./folderSandbox.ts";
+import { memberSandboxEnabled } from "./memberSandbox.ts";
+
+import {
+  ACCESS_AGENTS,
+  agentLimitsFor,
+  canCompute,
+  canManageProjects,
+  canMutate,
+  normalizeZones,
+  resolveZones,
+  resolvedFromValues,
+  zonesForPreset,
+  type ResolvedZones,
+  type ZoneValues,
+} from "@logicpacks/contracts";
+
+import { installHostWriteGuard, installRunLimiter } from "./runLimits.ts";
 import {
   MIN_PASSWORD_LENGTH,
   normalizeEmail,
@@ -29,7 +49,33 @@ export interface LogicPacksProjectMember {
   readonly role: ProjectRole;
 }
 
-export type WorkspaceRole = "owner" | "member";
+/** `viewer` is "Read only": it sees everything and changes nothing. Stored beside the CHECKed role. */
+export type WorkspaceRole = "owner" | "member" | "viewer";
+
+/** What roleOf answers: a project role, or `viewer` through a read-only workspace seat. */
+export type EffectiveRole = ProjectRole | "viewer";
+
+/** One row of the project's access trail: who did what with the host's agent, files or terminal. */
+export interface AccessLogEntry {
+  readonly id: string;
+  readonly atMs: number;
+  readonly projectId: string | null;
+  /** The member the entry is about; null for the host. */
+  readonly userId: string | null;
+  readonly kind: string;
+  readonly detail: string;
+}
+
+/** A member asking the host for the AI or Compute zone; the host decides. */
+export interface AccessRequest {
+  readonly id: string;
+  readonly projectId: string;
+  readonly userId: string;
+  readonly zone: "ai" | "compute";
+  readonly status: "open" | "allowed" | "denied";
+  readonly createdAtMs: number;
+  readonly decidedAtMs: number | null;
+}
 
 export type OnboardingChoice = "pro" | "beginner" | "skipped";
 export const isOnboardingChoice = (value: unknown): value is OnboardingChoice =>
@@ -60,6 +106,7 @@ export class LogicPacksAccessError extends Schema.TaggedError<LogicPacksAccessEr
       "invalid_credentials",
       "unknown_user",
       "not_owner",
+      "read_only",
       "last_owner",
       "unknown_workspace",
       "invalid_workspace_name",
@@ -190,7 +237,81 @@ export class LogicPacksAccess extends Context.Service<
     ) => Effect.Effect<LogicPacksUser | null, LogicPacksAccessError>;
     readonly listUsers: () => Effect.Effect<ReadonlyArray<LogicPacksUser>, LogicPacksAccessError>;
     /** Synchronous so stream filters can call it per item. */
-    readonly roleOf: (userId: string, projectId: string) => ProjectRole | null;
+    readonly roleOf: (userId: string, projectId: string) => EffectiveRole | null;
+    /**
+     * True when the user may only read where this command lands: the project's workspace, or
+     * their current workspace when no project is named. Owners of the project are never read only.
+     */
+    readonly isReadOnly: (userId: string, projectId: string | null) => boolean;
+    /**
+     * What this person may do in the project: the one permission model (access zones).
+     * Owner > Read only workspace seat > their override > the project's default (the share
+     * link's setting) > Can edit. Synchronous: the RPC fence and every route ask per call.
+     * With no project, the current workspace's seat decides (Read only) or Can edit.
+     */
+    readonly zonesOf: (userId: string, projectId: string | null) => ResolvedZones;
+    /**
+     * May this person create projects (and workspaces) on this host? True on a cloud host (every
+     * account has its own space there), for everyone who held access before the Projects zone
+     * existed (grandfathered), and for anyone whose zones in a project they can see turn Projects on.
+     */
+    readonly canCreateProjects: (userId: string) => boolean;
+    /**
+     * The workspace a project this person creates joins. On a host that is someone's own computer
+     * it is the workspace they were shared into (the host's), so the host can see and remove it;
+     * on a cloud host, or with nothing shared, their current workspace.
+     */
+    readonly creationWorkspaceId: (userId: string | null) => string | null;
+    /** The project's default for everyone without an override; null clears it (back to Can edit). */
+    readonly setProjectZones: (input: {
+      readonly projectId: string;
+      readonly actorUserId: string | null;
+      readonly zones: ZoneValues | null;
+    }) => Effect.Effect<void, LogicPacksAccessError>;
+    /** One person's override on one project; null clears it (they follow the default again). */
+    readonly setMemberZones: (input: {
+      readonly projectId: string;
+      readonly actorUserId: string | null;
+      readonly userId: string;
+      readonly zones: ZoneValues | null;
+    }) => Effect.Effect<void, LogicPacksAccessError>;
+    /** The project's default and every override, raw, for the Share dialog. */
+    readonly zoneSettings: (projectId: string) => {
+      readonly projectDefault: ZoneValues | null;
+      readonly overrides: ReadonlyMap<string, ZoneValues>;
+    };
+    /**
+     * Called after any zone change (project default, override, seat, removal) with the project
+     * and, when one person's access changed, who. Live streams and terminals re-check on it.
+     */
+    readonly onZonesChanged: (
+      listener: (change: { readonly projectId: string; readonly userId: string | null }) => void,
+    ) => () => void;
+    /**
+     * The access trail (terminal sessions, requests, zone changes). Shown to the project's owner
+     * and kept per project; best effort, never fails the call it records.
+     */
+    readonly logAccess: (entry: {
+      readonly projectId: string | null;
+      readonly userId: string | null;
+      readonly kind: string;
+      readonly detail: string;
+    }) => Effect.Effect<void>;
+    readonly accessLog: (projectId: string, limit?: number) => ReadonlyArray<AccessLogEntry>;
+    /** A member asks for the AI or Compute zone. A second ask while one is open returns it. */
+    readonly requestAccess: (input: {
+      readonly projectId: string;
+      readonly userId: string;
+      readonly zone: "ai" | "compute";
+    }) => Effect.Effect<AccessRequest, LogicPacksAccessError>;
+    readonly accessRequests: (projectId: string) => ReadonlyArray<AccessRequest>;
+    /** The owner allows or denies. Allow turns that zone on for the person (an override). */
+    readonly decideAccess: (input: {
+      readonly projectId: string;
+      readonly actorUserId: string | null;
+      readonly requestId: string;
+      readonly decision: "allow" | "deny";
+    }) => Effect.Effect<AccessRequest, LogicPacksAccessError>;
     readonly visibleProjectIds: (userId: string) => ReadonlySet<string>;
     readonly recordOwner: (
       projectId: string,
@@ -366,6 +487,15 @@ const ensureSchema = (sql: SqlClient.SqlClient) =>
           PRIMARY KEY (workspace_id, user_id)
         )
       `,
+      // Read-only seats. The members table's CHECK cannot be widened in place, so a viewer is a
+      // 'member' row there plus a row here.
+      sql`
+        CREATE TABLE IF NOT EXISTS logicpacks_workspace_readonly (
+          workspace_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          PRIMARY KEY (workspace_id, user_id)
+        )
+      `,
       sql`
         CREATE TABLE IF NOT EXISTS logicpacks_workspace_projects (
           project_id TEXT PRIMARY KEY,
@@ -406,6 +536,41 @@ const ensureSchema = (sql: SqlClient.SqlClient) =>
           decided_at TEXT NOT NULL
         )
       `,
+      // Access zones. user_id '*' is the project's default (the share link's setting).
+      sql`
+        CREATE TABLE IF NOT EXISTS logicpacks_project_zones (
+          project_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          zones TEXT NOT NULL,
+          updated_by TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, user_id)
+        )
+      `,
+      // Accounts that existed when the Projects zone arrived keep what they could do.
+      sql`CREATE TABLE IF NOT EXISTS logicpacks_zone_migrations (name TEXT PRIMARY KEY)`,
+      sql`CREATE TABLE IF NOT EXISTS logicpacks_projects_grandfathered (user_id TEXT PRIMARY KEY)`,
+      sql`
+        CREATE TABLE IF NOT EXISTS logicpacks_access_log (
+          id TEXT PRIMARY KEY,
+          at_ms INTEGER NOT NULL,
+          project_id TEXT,
+          user_id TEXT,
+          kind TEXT NOT NULL,
+          detail TEXT NOT NULL
+        )
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS logicpacks_access_requests (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          zone TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          decided_at_ms INTEGER
+        )
+      `,
       sql`
         CREATE TABLE IF NOT EXISTS logicpacks_current_workspace (
           viewer TEXT PRIMARY KEY,
@@ -416,9 +581,68 @@ const ensureSchema = (sql: SqlClient.SqlClient) =>
     { discard: true },
   );
 
+/**
+ * A stored row from before the Projects zone has no `projects.create` key: those people could
+ * create projects, so the missing value reads as On (never Off). New rows always carry it.
+ */
+const parseZoneRow = (raw: string): ZoneValues | null => {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const legacy =
+      parsed !== null && typeof parsed === "object"
+        ? {
+            ...parsed,
+            // A seat saved before the Projects zone kept creating projects.
+            ...("projects.create" in parsed ? {} : { "projects.create": "on" }),
+            // A seat saved before the Compute mode ran terminals as the host's user: it stays that
+            // way (Unrestricted) until the host changes it. New seats default to Sandboxed.
+            ...("compute.mode" in parsed || parsed["compute.terminal"] !== "on"
+              ? {}
+              : { "compute.mode": "unrestricted" }),
+          }
+        : parsed;
+    return normalizeZones(legacy);
+  } catch {
+    return null;
+  }
+};
+
+/** The OS can confine a member here: macOS Seatbelt, or the cloud host's per-member Unix users. */
+const sandboxPossible = () => memberSandboxSupported() || memberSandboxEnabled();
+
+const PROJECTS_ZONE_MIGRATION = "projects-zone-v1";
+
+/**
+ * Once, when the Projects zone first runs: every account that exists now is grandfathered (treated
+ * as granted), so nothing a member could do before stops working. Accounts made later start with
+ * the zone off. Exported so a test can replay it against a database that already has members.
+ */
+export const migrateProjectsZone = Effect.fn("LogicPacksAccess.migrateProjectsZone")(function* (
+  sql: SqlClient.SqlClient,
+) {
+  return yield* Effect.gen(function* () {
+    const done = yield* sql<{ readonly name: string }>`
+      SELECT name FROM logicpacks_zone_migrations WHERE name = ${PROJECTS_ZONE_MIGRATION}
+    `;
+    if (done.length > 0) return false;
+    yield* sql`
+      INSERT OR IGNORE INTO logicpacks_projects_grandfathered (user_id)
+      SELECT user_id FROM logicpacks_users
+    `;
+    yield* sql`INSERT INTO logicpacks_zone_migrations (name) VALUES (${PROJECTS_ZONE_MIGRATION})`;
+    return true;
+  }).pipe(Effect.mapError(storage("migrating the Projects zone")));
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* ensureSchema(sql).pipe(Effect.mapError(storage("schema setup")));
+  yield* migrateProjectsZone(sql);
+  const grandfathered = new Set(
+    (yield* sql<{ readonly user_id: string }>`
+      SELECT user_id FROM logicpacks_projects_grandfathered
+    `.pipe(Effect.mapError(storage("loading grandfathered accounts")))).map((row) => row.user_id),
+  );
 
   // project -> user -> role. One server process owns the database, so the cache is authoritative.
   const access = new Map<string, Map<string, ProjectRole>>();
@@ -430,6 +654,76 @@ const make = Effect.gen(function* () {
     members.set(row.user_id, row.role);
     access.set(row.project_id, members);
   }
+
+  // project -> user (or "*" for the project default) -> zone values.
+  const ZONE_DEFAULT_KEY = "*";
+  const zoneRows = new Map<string, Map<string, ZoneValues>>();
+  for (const row of yield* sql<{
+    readonly project_id: string;
+    readonly user_id: string;
+    readonly zones: string;
+  }>`SELECT project_id, user_id, zones FROM logicpacks_project_zones`.pipe(
+    Effect.mapError(storage("loading access zones")),
+  )) {
+    // A row that does not parse is skipped: the person falls to the default, never to more.
+    const parsed = parseZoneRow(row.zones);
+    if (parsed === null) continue;
+    const rows = zoneRows.get(row.project_id) ?? new Map<string, ZoneValues>();
+    rows.set(row.user_id, parsed);
+    zoneRows.set(row.project_id, rows);
+  }
+  const zoneListeners = new Set<
+    (change: { readonly projectId: string; readonly userId: string | null }) => void
+  >();
+  const emitZones = (projectId: string, userId: string | null) => {
+    for (const listener of zoneListeners) {
+      try {
+        listener({ projectId, userId });
+      } catch {
+        // A listener must never break a settings change.
+      }
+    }
+  };
+
+  const requestRows = new Map<string, AccessRequest>();
+  for (const row of yield* sql<{
+    readonly id: string;
+    readonly project_id: string;
+    readonly user_id: string;
+    readonly zone: "ai" | "compute";
+    readonly status: "open" | "allowed" | "denied";
+    readonly created_at_ms: number;
+    readonly decided_at_ms: number | null;
+  }>`SELECT * FROM logicpacks_access_requests`.pipe(
+    Effect.mapError(storage("loading access requests")),
+  )) {
+    requestRows.set(row.id, {
+      id: row.id,
+      projectId: row.project_id,
+      userId: row.user_id,
+      zone: row.zone,
+      status: row.status,
+      createdAtMs: Number(row.created_at_ms),
+      decidedAtMs: row.decided_at_ms === null ? null : Number(row.decided_at_ms),
+    });
+  }
+  const recentLog: Array<AccessLogEntry> = (yield* sql<{
+    readonly id: string;
+    readonly at_ms: number;
+    readonly project_id: string | null;
+    readonly user_id: string | null;
+    readonly kind: string;
+    readonly detail: string;
+  }>`SELECT * FROM logicpacks_access_log ORDER BY at_ms DESC LIMIT 500`.pipe(
+    Effect.mapError(storage("loading the access log")),
+  )).map((row) => ({
+    id: row.id,
+    atMs: Number(row.at_ms),
+    projectId: row.project_id,
+    userId: row.user_id,
+    kind: row.kind,
+    detail: row.detail,
+  }));
 
   const synced = new Set(
     (yield* sql<{ readonly project_id: string }>`
@@ -471,6 +765,12 @@ const make = Effect.gen(function* () {
     const members = workspaceMembers.get(row.workspace_id) ?? new Map<string, WorkspaceRole>();
     members.set(row.user_id, row.role);
     workspaceMembers.set(row.workspace_id, members);
+  }
+  for (const row of yield* sql<{ readonly workspace_id: string; readonly user_id: string }>`
+      SELECT workspace_id, user_id FROM logicpacks_workspace_readonly
+    `.pipe(Effect.mapError(storage("loading read-only seats")))) {
+    const members = workspaceMembers.get(row.workspace_id);
+    if (members?.get(row.user_id) === "member") members.set(row.user_id, "viewer");
   }
   for (const row of yield* sql<{ readonly project_id: string; readonly workspace_id: string }>`
       SELECT project_id, workspace_id FROM logicpacks_workspace_projects
@@ -565,11 +865,23 @@ const make = Effect.gen(function* () {
     addedBy: string | null,
   ) {
     const createdAt = yield* now;
+    const stored = role === "viewer" ? "member" : role;
     yield* sql`
       INSERT INTO logicpacks_workspace_members (workspace_id, user_id, role, added_by, created_at)
-      VALUES (${workspaceId}, ${userId}, ${role}, ${addedBy}, ${createdAt})
+      VALUES (${workspaceId}, ${userId}, ${stored}, ${addedBy}, ${createdAt})
       ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role
     `.pipe(Effect.mapError(storage("adding a workspace member")));
+    yield* (
+      role === "viewer"
+        ? sql`
+            INSERT OR IGNORE INTO logicpacks_workspace_readonly (workspace_id, user_id)
+            VALUES (${workspaceId}, ${userId})
+          `
+        : sql`
+            DELETE FROM logicpacks_workspace_readonly
+            WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+          `
+    ).pipe(Effect.mapError(storage("setting a read-only seat")));
     const members = workspaceMembers.get(workspaceId) ?? new Map<string, WorkspaceRole>();
     members.set(userId, role);
     workspaceMembers.set(workspaceId, members);
@@ -691,13 +1003,119 @@ const make = Effect.gen(function* () {
   });
 
   /** A direct share, or the role the project's workspace gives; owner wins. */
-  const roleOf = (userId: string, projectId: string): ProjectRole | null => {
+  const roleOf = (userId: string, projectId: string): EffectiveRole | null => {
     const direct = access.get(projectId)?.get(userId) ?? null;
     const workspaceId = projectWorkspace.get(projectId);
     const viaWorkspace = workspaceId === undefined ? null : workspaceRoleOf(userId, workspaceId);
     if (direct === "owner" || viaWorkspace === "owner") return "owner";
+    // A read-only seat holds in all of the workspace's projects, even over a share link member.
+    if (viaWorkspace === "viewer") return "viewer";
     return direct ?? viaWorkspace;
   };
+
+  const visibleProjectIdsOf = (userId: string): ReadonlySet<string> =>
+    new Set([
+      ...Array.from(access.entries()).flatMap(([projectId, members]) =>
+        members.has(userId) ? [projectId] : [],
+      ),
+      ...Array.from(projectWorkspace.entries()).flatMap(([projectId, workspaceId]) =>
+        workspaceRoleOf(userId, workspaceId) === null ? [] : [projectId],
+      ),
+    ]);
+
+  const zonesOf = (userId: string, projectId: string | null): ResolvedZones => {
+    if (projectId === null) {
+      const current = currentWorkspaceId(userId);
+      return resolveZones({
+        isOwner: false,
+        viewerSeat: current !== null && workspaceRoleOf(userId, current) === "viewer",
+      });
+    }
+    const role = roleOf(userId, projectId);
+    const rows = zoneRows.get(projectId);
+    const resolved = resolveZones({
+      isOwner: role === "owner",
+      viewerSeat: role === "viewer",
+      override: rows?.get(userId),
+      projectDefault: rows?.get(ZONE_DEFAULT_KEY),
+    });
+    // An account that predates the Projects zone keeps it (a Read only seat never had it).
+    if (
+      resolved.source !== "owner" &&
+      resolved.source !== "seat" &&
+      (grandfathered.has(userId) || projectsDefaultOn)
+    ) {
+      return resolvedFromValues({ ...resolved.zones, "projects.create": "on" }, resolved.source);
+    }
+    return resolved;
+  };
+
+  const onCloudHost = /^(1|true|yes|on)$/i.test((process.env.LOGICPACKS_CLOUD_HOST ?? "").trim());
+  // A team server whose operator wants every member to create projects sets this once, instead of
+  // granting it in each share (LOGICPACKS_PROJECTS_ZONE_DEFAULT=on). Off when unset: new shares start off.
+  const projectsDefaultOn = /^(1|true|yes|on)$/i.test(
+    (process.env.LOGICPACKS_PROJECTS_ZONE_DEFAULT ?? "").trim(),
+  );
+  const canCreateProjects = (userId: string): boolean => {
+    if (onCloudHost || projectsDefaultOn || grandfathered.has(userId)) return true;
+    for (const projectId of visibleProjectIdsOf(userId)) {
+      if (canManageProjects(zonesOf(userId, projectId).zones)) return true;
+    }
+    return false;
+  };
+
+  /**
+   * Read only is derived from zones: the `viewer` seat is the readonly preset, and any other
+   * seat whose zones allow no change (no AI, no file writes, no compute) is read only too.
+   * Someone with no access at all to a project is not "read only"; the fence refuses them.
+   */
+  const isReadOnly = (userId: string, projectId: string | null): boolean => {
+    if (projectId !== null) {
+      return roleOf(userId, projectId) !== null && !canMutate(zonesOf(userId, projectId).zones);
+    }
+    const current = currentWorkspaceId(userId);
+    return current !== null && workspaceRoleOf(userId, current) === "viewer";
+  };
+
+  // Agent runs for a member read this person's live zones when they start.
+  installRunLimiter((sender) =>
+    roleOf(sender.userId, sender.projectId ?? "") === null && sender.projectId !== null
+      ? agentLimitsFor(zonesForPreset("readonly"))
+      : agentLimitsFor(zonesOf(sender.userId, sender.projectId).zones),
+  );
+
+  installHostWriteGuard(
+    (sender) =>
+      canCreateProjects(sender.userId) ||
+      (sender.projectId !== null && canCompute(zonesOf(sender.userId, sender.projectId).zones)),
+  );
+
+  const writeZones = Effect.fn("LogicPacksAccess.writeZones")(function* (
+    projectId: string,
+    key: string,
+    zones: ZoneValues | null,
+    actorUserId: string | null,
+  ) {
+    if (zones === null) {
+      yield* sql`
+        DELETE FROM logicpacks_project_zones WHERE project_id = ${projectId} AND user_id = ${key}
+      `.pipe(Effect.mapError(storage("clearing access zones")));
+      zoneRows.get(projectId)?.delete(key);
+    } else {
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const normalized = normalizeZones(zones);
+      yield* sql`
+        INSERT INTO logicpacks_project_zones (project_id, user_id, zones, updated_by, updated_at)
+        VALUES (${projectId}, ${key}, ${JSON.stringify(normalized)}, ${actorUserId}, ${at})
+        ON CONFLICT (project_id, user_id) DO UPDATE SET
+          zones = excluded.zones, updated_by = excluded.updated_by, updated_at = excluded.updated_at
+      `.pipe(Effect.mapError(storage("saving access zones")));
+      const rows = zoneRows.get(projectId) ?? new Map<string, ZoneValues>();
+      rows.set(key, normalized);
+      zoneRows.set(projectId, rows);
+    }
+    emitZones(projectId, key === ZONE_DEFAULT_KEY ? null : key);
+  });
 
   const inView = (actorUserId: string | null, projectId: string) => {
     const current = currentWorkspaceId(actorUserId);
@@ -859,15 +1277,129 @@ const make = Effect.gen(function* () {
       return found.map(toUser);
     }),
     roleOf,
-    visibleProjectIds: (userId) =>
-      new Set([
-        ...Array.from(access.entries()).flatMap(([projectId, members]) =>
-          members.has(userId) ? [projectId] : [],
-        ),
-        ...Array.from(projectWorkspace.entries()).flatMap(([projectId, workspaceId]) =>
-          workspaceRoleOf(userId, workspaceId) === null ? [] : [projectId],
-        ),
-      ]),
+    isReadOnly,
+    zonesOf,
+    canCreateProjects,
+    creationWorkspaceId: (userId) => {
+      if (userId === null) return currentWorkspaceId(null);
+      if (!onCloudHost) {
+        for (const projectId of visibleProjectIdsOf(userId)) {
+          const shared = projectWorkspace.get(projectId);
+          if (shared !== undefined && roleOf(userId, projectId) !== "owner") return shared;
+        }
+      }
+      return currentWorkspaceId(userId);
+    },
+    setProjectZones: Effect.fn("LogicPacksAccess.setProjectZones")(function* (input) {
+      yield* requireOwner(input.projectId, input.actorUserId);
+      yield* writeZones(input.projectId, ZONE_DEFAULT_KEY, input.zones, input.actorUserId);
+    }),
+    setMemberZones: Effect.fn("LogicPacksAccess.setMemberZones")(function* (input) {
+      yield* requireOwner(input.projectId, input.actorUserId);
+      if (input.userId === ZONE_DEFAULT_KEY) return yield* fail("unknown_user", "No such person.");
+      if (roleOf(input.userId, input.projectId) === null) {
+        return yield* fail("unknown_user", "They do not have access to this project.");
+      }
+      if (roleOf(input.userId, input.projectId) === "owner") {
+        return yield* fail("last_owner", "An owner always has full access.");
+      }
+      yield* writeZones(input.projectId, input.userId, input.zones, input.actorUserId);
+    }),
+    zoneSettings: (projectId) => {
+      const rows = zoneRows.get(projectId);
+      const overrides = new Map<string, ZoneValues>();
+      for (const [key, value] of rows ?? []) if (key !== ZONE_DEFAULT_KEY) overrides.set(key, value);
+      return { projectDefault: rows?.get(ZONE_DEFAULT_KEY) ?? null, overrides };
+    },
+    onZonesChanged: (listener) => {
+      zoneListeners.add(listener);
+      return () => {
+        zoneListeners.delete(listener);
+      };
+    },
+    logAccess: Effect.fn("LogicPacksAccess.logAccess")(function* (entry) {
+      const atMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const id = NodeCrypto.randomUUID();
+      const detail = entry.detail.slice(0, 500);
+      yield* sql`
+        INSERT INTO logicpacks_access_log (id, at_ms, project_id, user_id, kind, detail)
+        VALUES (${id}, ${atMs}, ${entry.projectId}, ${entry.userId}, ${entry.kind}, ${detail})
+      `.pipe(Effect.ignoreCause);
+      recentLog.unshift({ id, atMs, ...entry, detail });
+      if (recentLog.length > 500) recentLog.length = 500;
+    }),
+    accessLog: (projectId, limit = 100) =>
+      recentLog.filter((entry) => entry.projectId === projectId).slice(0, limit),
+    requestAccess: Effect.fn("LogicPacksAccess.requestAccess")(function* (input) {
+      if (roleOf(input.userId, input.projectId) === null) {
+        return yield* fail("unknown_user", "This project is not shared with you.");
+      }
+      for (const open of requestRows.values()) {
+        if (
+          open.status === "open" &&
+          open.projectId === input.projectId &&
+          open.userId === input.userId &&
+          open.zone === input.zone
+        ) {
+          return open;
+        }
+      }
+      const request: AccessRequest = {
+        id: NodeCrypto.randomUUID(),
+        projectId: input.projectId,
+        userId: input.userId,
+        zone: input.zone,
+        status: "open",
+        createdAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+        decidedAtMs: null,
+      };
+      yield* sql`
+        INSERT INTO logicpacks_access_requests (id, project_id, user_id, zone, status, created_at_ms)
+        VALUES (${request.id}, ${request.projectId}, ${request.userId}, ${request.zone}, 'open', ${request.createdAtMs})
+      `.pipe(Effect.mapError(storage("saving an access request")));
+      requestRows.set(request.id, request);
+      return request;
+    }),
+    accessRequests: (projectId) =>
+      Array.from(requestRows.values())
+        .filter((request) => request.projectId === projectId)
+        .toSorted((a, b) => b.createdAtMs - a.createdAtMs),
+    decideAccess: Effect.fn("LogicPacksAccess.decideAccess")(function* (input) {
+      yield* requireOwner(input.projectId, input.actorUserId);
+      const request = requestRows.get(input.requestId);
+      if (request === undefined || request.projectId !== input.projectId) {
+        return yield* fail("unknown_user", "That request is gone.");
+      }
+      if (request.status !== "open") return request;
+      const decided: AccessRequest = {
+        ...request,
+        status: input.decision === "allow" ? "allowed" : "denied",
+        decidedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+      };
+      yield* sql`
+        UPDATE logicpacks_access_requests
+        SET status = ${decided.status}, decided_at_ms = ${decided.decidedAtMs}
+        WHERE id = ${decided.id}
+      `.pipe(Effect.mapError(storage("deciding an access request")));
+      requestRows.set(decided.id, decided);
+      if (input.decision === "allow" && roleOf(request.userId, request.projectId) !== null) {
+        const current = zonesOf(request.userId, request.projectId).zones;
+        const next = normalizeZones(
+          request.zone === "ai"
+            ? { ...current, "ai.agents": ACCESS_AGENTS.join(",") }
+            : {
+                ...current,
+                "compute.terminal": "on",
+                // Sandboxed where this computer can sandbox; where it cannot, the host's Allow (behind the
+                // blunt warning) is a shell as their user, because a sandboxed terminal would not start.
+                "compute.mode": sandboxPossible() ? "sandboxed" : "unrestricted",
+              },
+        );
+        yield* writeZones(request.projectId, request.userId, next, input.actorUserId);
+      }
+      return decided;
+    }),
+    visibleProjectIds: visibleProjectIdsOf,
     recordOwner: Effect.fn("LogicPacksAccess.recordOwner")(function* (projectId, userId) {
       yield* writeRole(projectId, userId, "owner", userId);
     }),
@@ -925,6 +1457,9 @@ const make = Effect.gen(function* () {
         WHERE project_id = ${input.projectId} AND user_id = ${input.userId}
       `.pipe(Effect.mapError(storage("unsharing a project")));
       members.delete(input.userId);
+      yield* writeZones(input.projectId, input.userId, null, input.actorUserId);
+      // Their open sockets stop streaming now; they reconnect with their current access.
+      closeMemberSockets(input.userId);
     }),
     createWorkspace: Effect.fn("LogicPacksAccess.createWorkspace")(function* (input) {
       const name = yield* workspaceName(input.name);
@@ -1024,6 +1559,8 @@ const make = Effect.gen(function* () {
         return yield* fail("last_owner", "A workspace keeps at least one owner.");
       }
       yield* writeWorkspaceRole(input.workspaceId, input.userId, input.role, input.actorUserId);
+      // A seat change (Read only on or off) is a zone change for every project in it.
+      for (const projectId of projectsOf(input.workspaceId)) emitZones(projectId, input.userId);
     }),
     removeWorkspaceMember: Effect.fn("LogicPacksAccess.removeWorkspaceMember")(function* (input) {
       if (input.actorUserId !== input.userId) {
@@ -1060,12 +1597,23 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(storage("removing a workspace member")));
       members.delete(input.userId);
       for (const projectId of projectIds) access.get(projectId)?.delete(input.userId);
+      for (const projectId of projectIds) emitZones(projectId, input.userId);
       if (currentByViewer.get(input.userId) === input.workspaceId) {
         currentByViewer.delete(input.userId);
       }
+      closeMemberSockets(input.userId);
     }),
     inviteToken: Effect.fn("LogicPacksAccess.inviteToken")(function* (input) {
       yield* requireWorkspaceMember(input.workspaceId, input.actorUserId);
+      if (
+        input.actorUserId !== null &&
+        workspaceRoleOf(input.actorUserId, input.workspaceId) === "viewer"
+      ) {
+        return yield* fail(
+          "read_only",
+          "You have read-only access to this workspace. Ask an owner to change it.",
+        );
+      }
       return (
         inviteByWorkspace.get(input.workspaceId) ??
         (yield* writeInvite(input.workspaceId, input.actorUserId))
@@ -1111,6 +1659,9 @@ const make = Effect.gen(function* () {
       const counts = yield* purgeAll(
         [
           ["logicpacks_project_access", "user_id"],
+          ["logicpacks_project_zones", "user_id"],
+          ["logicpacks_access_requests", "user_id"],
+          ["logicpacks_projects_grandfathered", "user_id"],
           ["logicpacks_workspace_members", "user_id"],
           ["logicpacks_current_workspace", "viewer"],
           ["logicpacks_sync_pushers", "user_id"],
@@ -1122,6 +1673,7 @@ const make = Effect.gen(function* () {
         userId,
       ).pipe(Effect.mapError(storage("deleting a user")));
       for (const members of access.values()) members.delete(userId);
+      for (const rows of zoneRows.values()) rows.delete(userId);
       for (const members of workspaceMembers.values()) members.delete(userId);
       for (const [projectId, pusher] of pushers) {
         if (pusher === userId) pushers.delete(projectId);
@@ -1134,6 +1686,9 @@ const make = Effect.gen(function* () {
       const counts = yield* purgeAll(
         [
           ["logicpacks_project_access", "project_id"],
+          ["logicpacks_project_zones", "project_id"],
+          ["logicpacks_access_requests", "project_id"],
+          ["logicpacks_access_log", "project_id"],
           ["logicpacks_workspace_projects", "project_id"],
           ["logicpacks_synced_projects", "project_id"],
           ["logicpacks_sync_pushers", "project_id"],
@@ -1141,6 +1696,7 @@ const make = Effect.gen(function* () {
         projectId,
       ).pipe(Effect.mapError(storage("forgetting a project")));
       access.delete(projectId);
+      zoneRows.delete(projectId);
       projectWorkspace.delete(projectId);
       synced.delete(projectId);
       pushers.delete(projectId);

@@ -1,4 +1,6 @@
 import type { ProjectId } from "@logicpacks/contracts";
+import { refuseIfReadOnly } from "./readOnly.ts";
+import { refuseIfFolderLimited, refuseIfZone } from "./zoneHttp.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -40,13 +42,25 @@ const syncErrorResponse = (error: LogicPacksSyncError) =>
   );
 
 /** The caller may act on the project: the operator always, a member when it is shared with them. */
-const projectAllowed = Effect.fn("logicpacks.sync.projectAllowed")(function* (projectId: string) {
+const projectAllowed = Effect.fn("logicpacks.sync.projectAllowed")(function* (
+  projectId: string,
+  changes = false,
+) {
   const caller = yield* resolveCaller;
   if (caller.kind === "anonymous")
     return { ok: false as const, response: json({ error: "unauthenticated" }, 401) };
   const access = yield* LogicPacksAccess;
   if (caller.kind === "member" && access.roleOf(caller.userId, projectId) === null) {
     return { ok: false as const, response: json({ error: "not_found" }, 404) };
+  }
+  if (changes) {
+    const readOnly = yield* refuseIfReadOnly(caller, projectId);
+    if (readOnly !== null) return { ok: false as const, response: readOnly };
+    // Sync commits and pushes the working copy: it needs write access to the files.
+    const zoneOff = yield* refuseIfZone(caller, projectId, ["files.write"]);
+    if (zoneOff !== null) return { ok: false as const, response: zoneOff };
+    const limited = yield* refuseIfFolderLimited(caller, projectId);
+    if (limited !== null) return { ok: false as const, response: limited };
   }
   return { ok: true as const, caller };
 });
@@ -103,7 +117,7 @@ const startRoute = HttpRouter.add(
   Effect.gen(function* () {
     const body = yield* readBody(ProjectRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    const allowed = yield* projectAllowed(body.projectId);
+    const allowed = yield* projectAllowed(body.projectId, true);
     if (!allowed.ok) return allowed.response;
     const sync = yield* LogicPacksSync;
     // On a laptop, Sync means syncing to the LogicPacks cloud: part of the cloud feature.
@@ -122,7 +136,7 @@ const nowRoute = HttpRouter.add(
   Effect.gen(function* () {
     const body = yield* readBody(ProjectRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    const allowed = yield* projectAllowed(body.projectId);
+    const allowed = yield* projectAllowed(body.projectId, true);
     if (!allowed.ok) return allowed.response;
     const sync = yield* LogicPacksSync;
     return json({ status: yield* sync.syncNow(body.projectId) });
@@ -135,7 +149,7 @@ const resolveRoute = HttpRouter.add(
   Effect.gen(function* () {
     const body = yield* readBody(ResolveRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    const allowed = yield* projectAllowed(body.projectId);
+    const allowed = yield* projectAllowed(body.projectId, true);
     if (!allowed.ok) return allowed.response;
     const sync = yield* LogicPacksSync;
     return json({

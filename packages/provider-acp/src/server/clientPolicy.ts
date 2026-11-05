@@ -9,6 +9,13 @@ export interface AcpRuntimePolicy {
   readonly cwd: string | null;
   readonly approvalPolicy?: unknown;
   readonly sandboxPolicy?: unknown;
+  /** A member's access zones: commands and edits an ACP agent asks for are refused when off. */
+  readonly toolLimits?:
+    | {
+        readonly edits: boolean;
+        readonly shell: boolean;
+      }
+    | undefined;
 }
 
 export type AcpPermissionDisposition = "allow" | "ask" | "deny";
@@ -147,6 +154,13 @@ function acpOperationDisposition(
   const toolKind = operation.kind ?? "other";
   if (isAcpReadKind(toolKind)) {
     return acpReadDisposition(runtimePolicy);
+  }
+  // Zone limits are a hard no, whatever the approval mode: nobody is asked. This stops an agent
+  // that asks permission before running; an agent that never asks is not stopped here.
+  const limits = runtimePolicy.toolLimits;
+  if (limits !== undefined) {
+    if (!limits.shell && toolKind === "execute") return "deny";
+    if (!limits.edits && isAcpMutationKind(toolKind)) return "deny";
   }
   if (acpPolicyRequiresApproval(runtimePolicy)) {
     return "ask";

@@ -15,12 +15,13 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { toastManager } from "../components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { lpApi, type LpProjectSync, type LpSession, type LpSyncState } from "./api";
-import { closeLpDialog, isMemberSession, openLpDialog, useLogicPacksSession } from "./store";
+import { closeLpDialog, openLpDialog, useLogicPacksSession } from "./store";
 import { applySyncStatus, refreshSyncStatus, useCloudHost, useProjectSync } from "./sync";
 
 const errorText = (error: unknown) =>
@@ -33,6 +34,10 @@ const LABEL: Record<LpSyncState, string> = {
   conflict: "Conflict",
   error: "Sync paused",
 };
+
+/** What the small "Not synced" chip says when it is clicked and sync cannot be turned on yet. */
+export const SYNC_SOON_NOTE =
+  "Sync is coming soon, so your projects keep running even when the host shuts off.";
 
 const VARIANT = {
   not_synced: "outline",
@@ -90,15 +95,29 @@ export function LpSyncBadge({
   const cloudLocked = useCloudSyncLocked();
   if (status === null) return null;
   if (cloudLocked && status.state === "not_synced") {
-    // One quiet label in the project header; nothing in the sidebar rows.
+    // One small, quiet chip in the project header; nothing in the sidebar rows. It does not
+    // advertise anything: a click only says why there is nothing to turn on yet.
     if (compact) return null;
     return (
-      <span
-        className="text-2xs text-muted-foreground whitespace-nowrap"
-        data-testid="lp-cloud-sync-soon"
-      >
-        Cloud sync: coming soon
-      </span>
+      <Popover>
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              data-testid="lp-cloud-sync-soon"
+              data-sync-state="not_synced"
+              aria-label={`${LABEL.not_synced}: ${title}`}
+              className="inline-flex h-5 min-w-0 cursor-pointer items-center truncate whitespace-nowrap rounded-pill px-1.5 text-2xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={(event) => event.stopPropagation()}
+            />
+          }
+        >
+          {LABEL.not_synced}
+        </PopoverTrigger>
+        <PopoverPopup side="bottom" align="start" className="w-64" data-testid="lp-cloud-sync-note">
+          <p className="text-sm text-muted-foreground">{SYNC_SOON_NOTE}</p>
+        </PopoverPopup>
+      </Popover>
     );
   }
   return (
@@ -130,8 +149,8 @@ export function LpSyncBadge({
 }
 
 /**
- * Shares the open project with another LogicPacks user in one step. Signed-in people
- * only: the host operator's projects reach teammates through Sync and the workspace.
+ * Shares the open project with another LogicPacks user in one step. Signed-in people and the
+ * host's own operator (a laptop's owner shares by link and sets what people can do).
  */
 export function LpShareProjectButton({
   projectId,
@@ -144,7 +163,7 @@ export function LpShareProjectButton({
 }) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { session } = useLogicPacksSession(false);
-  if (!isMemberSession(session) || environmentId !== primaryEnvironmentId) return null;
+  if (session === null || environmentId !== primaryEnvironmentId) return null;
   return (
     <Tooltip>
       <TooltipTrigger

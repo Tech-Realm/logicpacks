@@ -1,6 +1,6 @@
 # Recipes
 
-A recipe (`recipe/1`, `packages/contracts/src/recipe.ts`) says what a project is for. It replaced v1 packs in everything users see; `recipeFromPackManifest` converts a v1 `pack.json`, including the `recipe` section the app-recipes branch added to it.
+A recipe (`recipe/1`, `packages/contracts/src/recipe.ts`) says what a project is for. It replaced v1 packs in everything users see, and saved packs were removed from the product.
 
 ## Where things live
 

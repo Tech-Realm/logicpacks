@@ -4,6 +4,9 @@
  * Plain data and rules, no Effect and no storage, so every rule is unit-tested directly.
  * `ExternalTeamService.ts` stores them and `externalHttp.ts` runs the flow.
  */
+// @effect-diagnostics nodeBuiltinImport:off -- root-relative paths follow the host's own path rules.
+import * as NodePath from "node:path";
+
 import {
   LEVEL_LABEL,
   OFFER_DAYS,
@@ -18,6 +21,7 @@ import {
 import type { Quote } from "./externalPricing.ts";
 import type { TalentProfile } from "./externalTalentSeed.ts";
 import { pathMatches } from "./goals.ts";
+import { isWithin } from "./memberJail.ts";
 
 // ── Briefs ────────────────────────────────────────────────────────────────
 
@@ -953,10 +957,12 @@ export const isSecretPath = (
 
 /** A path relative to a project root, or null when it is outside. */
 export const relativeToRoot = (root: string, candidate: string): string | null => {
-  const r = root.replace(/\/+$/, "");
-  if (!candidate.startsWith("/")) return candidate;
-  if (candidate === r) return "";
-  return candidate.startsWith(`${r}/`) ? candidate.slice(r.length + 1) : null;
+  // A Windows host names its roots `C:\...` (or `C:/...`): compare with its rules, answer with `/`.
+  const windows = /^[A-Za-z]:[\\/]/.test(root);
+  const api = windows ? NodePath.win32 : NodePath.posix;
+  if (!api.isAbsolute(candidate)) return candidate;
+  if (!isWithin(root, candidate, api)) return null;
+  return api.relative(root, candidate).split(api.sep).join("/");
 };
 
 const REDACTED = "[redacted]";

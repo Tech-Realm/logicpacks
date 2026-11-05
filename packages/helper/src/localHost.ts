@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 export const LOCAL_HELPER_KEY_FILE = "helper-local.key";
 
 export const OPEN_THE_APP =
-  "Open the LogicPacks Mac app (download: https://logicpacks.io/download), then run lp login again. LogicPacks cloud is coming soon.";
+  "Open the LogicPacks app (download: https://logicpacks.io/download), then run lp login again. LogicPacks cloud is coming soon.";
 
 export const NOT_CONNECTED = `LogicPacks is not connected on this computer. Run lp login. ${OPEN_THE_APP}`;
 

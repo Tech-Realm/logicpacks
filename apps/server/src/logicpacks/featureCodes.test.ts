@@ -14,7 +14,7 @@ const code = (patch: Partial<AccessCode> = {}): AccessCode => ({
   id: "code-1",
   hash: hashCode("LP-ABCD-EFGH"),
   hint: "EFGH",
-  features: ["packs", "talent"],
+  features: ["talent", "apps"],
   maxUses: 2,
   uses: 0,
   expiresAtMs: 10_000,

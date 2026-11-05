@@ -1,4 +1,7 @@
-import type { ProjectId } from "@logicpacks/contracts";
+import { needsGrantWarning, zonesFromInput, type ProjectId } from "@logicpacks/contracts";
+import { refuseIfReadOnly } from "./readOnly.ts";
+import { accessOverview, confirmRequired } from "./accessHttp.ts";
+import { accessSeatView, hostAgents } from "./hostAgents.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -36,10 +39,18 @@ import {
 } from "./ProjectShares.ts";
 import { normalizeQuickLoginName, quickLoginEmail } from "./projectAccess.ts";
 import { ShareMailer } from "./shareMail.ts";
+import { ShareRelay } from "../shareRelay/ShareRelay.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
 
-const ShareRequest = Schema.Struct({ projectId: Schema.String, user: Schema.String });
+const ShareRequest = Schema.Struct({
+  projectId: Schema.String,
+  user: Schema.String,
+  /** What this person gets (an override): a preset id or explicit zones. Omitted: the project default. */
+  preset: Schema.optionalKey(Schema.String),
+  zones: Schema.optionalKey(Schema.Unknown),
+  confirmFull: Schema.optionalKey(Schema.Boolean),
+});
 const InviteRequest = Schema.Struct({ projectId: Schema.String, inviteId: Schema.String });
 const ProjectRequest = Schema.Struct({ projectId: Schema.String });
 const LinkRequest = Schema.Struct({
@@ -85,6 +96,12 @@ const publicBase = Effect.gen(function* () {
     Effect.orElseSucceed(() => ""),
   )).trim();
   if (configured.length > 0) return configured.replace(/\/+$/, "");
+  // An emailed invite has to open from anywhere: the public relay address wins while the tunnel is up.
+  const relay = yield* Effect.serviceOption(ShareRelay);
+  if (relay._tag === "Some") {
+    const status = yield* relay.value.status();
+    if (status.state === "connected" && status.origin !== null) return status.origin;
+  }
   const request = yield* HttpServerRequest.HttpServerRequest;
   const origin = request.headers["origin"];
   if (origin && /^https?:\/\//.test(origin)) return origin.replace(/\/+$/, "");
@@ -150,10 +167,21 @@ const overviewRoute = HttpRouter.add(
       if (role === null) return json({ error: "not_found" }, 404);
       const members = yield* access.listMembers(projectId);
       if (role !== "owner") {
-        return json({ canManage: false, members, invites: [], link: null, joins: [] });
+        return json({
+          canManage: false,
+          members,
+          invites: [],
+          link: null,
+          joins: [],
+          access: {
+            hostAgents: yield* hostAgents,
+            mine: actor === null ? null : accessSeatView(access.zonesOf(actor, projectId)),
+          },
+        });
       }
       return json({
         canManage: true,
+        access: yield* accessOverview(projectId, actor),
         members,
         invites: (yield* shares.listInvites(projectId)).map(inviteView),
         link: linkView(yield* shares.getLink(projectId)),
@@ -182,6 +210,8 @@ const postRoute = <A extends { readonly projectId: string }, R>(
         if (caller.kind === "anonymous") return json({ error: "unauthenticated" }, 401);
         const body = yield* readBody(schema);
         if (body === null) return json({ error: "bad_request" }, 400);
+        const readOnly = yield* refuseIfReadOnly(caller, body.projectId);
+        if (readOnly !== null) return readOnly;
         return yield* handle(body, actorOf(caller));
       }),
     ),
@@ -190,11 +220,19 @@ const postRoute = <A extends { readonly projectId: string }, R>(
 const shareRoute = postRoute("/api/lp/shares", ShareRequest, (body, actor) =>
   Effect.gen(function* () {
     const shares = yield* ProjectShares;
+    const zones =
+      body.preset === undefined && body.zones === undefined
+        ? undefined
+        : (zonesFromInput({ preset: body.preset, zones: body.zones }) ?? undefined);
+    if (zones !== undefined && needsGrantWarning(zones) && body.confirmFull !== true) {
+      return confirmRequired();
+    }
     const outcome = yield* shares.share({
       projectId: body.projectId,
       actorUserId: actor,
       user: body.user,
       mail: yield* mailContext(body.projectId),
+      zones,
     });
     return outcome.kind === "member"
       ? json({ kind: "member", member: outcome.member })

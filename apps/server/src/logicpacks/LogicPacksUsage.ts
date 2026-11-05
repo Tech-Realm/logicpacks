@@ -33,13 +33,6 @@ import {
   reachedAchievementIds,
   toUnlocked,
 } from "./achievements.ts";
-import {
-  type PackActivityKind,
-  type PackCredit,
-  publishCredits,
-  publishedSubject,
-  reuseCredits,
-} from "./packCredits.ts";
 import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { isMemberInstanceId, isOwnMemberInstance } from "./memberProviders.ts";
 import { memberUserIdFromSubject } from "./projectAccess.ts";
@@ -73,8 +66,7 @@ export const callerFromSubject = (subject: string): UsageCaller => {
 export type ActivityKind =
   | "thread.created"
   | "project.synced"
-  | LpReportableActivityKind
-  | PackActivityKind;
+  | LpReportableActivityKind;
 
 export class LogicPacksUsage extends Context.Service<
   LogicPacksUsage,
@@ -92,22 +84,6 @@ export class LogicPacksUsage extends Context.Service<
       readonly kind: ActivityKind;
       readonly subject: string;
       readonly projectId?: string | null | undefined;
-    }) => Effect.Effect<ReadonlyArray<LpUnlockedAchievement>, LpUsageError>;
-    /** A pack was saved: the author gets credit for publishing it. */
-    readonly recordPackPublished: (input: {
-      readonly authorId: string;
-      readonly key: string;
-      readonly projectId: string | null;
-    }) => Effect.Effect<ReadonlyArray<LpUnlockedAchievement>, LpUsageError>;
-    /**
-     * A pack was used in a thread or project: credit for the person reusing it and for
-     * its author. Returns what the person reusing it unlocked.
-     */
-    readonly recordPackReused: (input: {
-      readonly reuserId: string;
-      readonly key: string;
-      readonly useId: string;
-      readonly projectId: string | null;
     }) => Effect.Effect<ReadonlyArray<LpUnlockedAchievement>, LpUsageError>;
     readonly leaderboard: (input: {
       readonly caller: UsageCaller;
@@ -473,10 +449,6 @@ const make = Effect.gen(function* () {
       threadsShared: threads.filter(
         (row) => row.project_id !== null && sharedProjects.has(row.project_id),
       ).length,
-      recipesPublished: yield* countActivity(participantId, "recipe.published"),
-      recipesReused: yield* countActivity(participantId, "recipe.reused"),
-      packTeammateReuses: yield* countActivity(participantId, "pack.reused_by_teammate"),
-      packReusesReceived: yield* countActivity(participantId, "pack.reuse_received"),
       conflictsResolved: yield* countActivity(participantId, "conflict.resolved"),
       helperSessionsLinked: yield* countActivity(participantId, "helper.session_linked"),
     } satisfies ParticipantMetrics;
@@ -558,58 +530,6 @@ const make = Effect.gen(function* () {
       ON CONFLICT (kind, participant_id, subject) DO NOTHING
     `.pipe(Effect.mapError(storage("recording activity")));
     return yield* evaluate(input.participantId);
-  });
-
-  const recordCredits = Effect.fn("LogicPacksUsage.recordCredits")(function* (
-    credits: ReadonlyArray<PackCredit>,
-    projectId: string | null,
-  ) {
-    const unlocked = new Map<string, ReadonlyArray<LpUnlockedAchievement>>();
-    for (const credit of credits) {
-      unlocked.set(
-        credit.participantId,
-        yield* recordActivity({
-          participantId: credit.participantId,
-          kind: credit.kind,
-          subject: credit.subject,
-          projectId,
-        }),
-      );
-    }
-    return unlocked;
-  });
-
-  const recordPackPublished = Effect.fn("LogicPacksUsage.recordPackPublished")(function* (input: {
-    readonly authorId: string;
-    readonly key: string;
-    readonly projectId: string | null;
-  }) {
-    const unlocked = yield* recordCredits(
-      publishCredits(input.authorId, input.key),
-      input.projectId,
-    );
-    return unlocked.get(input.authorId) ?? [];
-  });
-
-  const recordPackReused = Effect.fn("LogicPacksUsage.recordPackReused")(function* (input: {
-    readonly reuserId: string;
-    readonly key: string;
-    readonly useId: string;
-    readonly projectId: string | null;
-  }) {
-    const authors = yield* sql<{ readonly participant_id: string }>`
-      SELECT participant_id FROM logicpacks_activity
-      WHERE kind = 'recipe.published' AND subject = ${publishedSubject(input.key)}
-      ORDER BY occurred_at LIMIT 1
-    `.pipe(Effect.mapError(storage("finding a pack's author")));
-    const credits = reuseCredits({
-      authorId: authors[0]?.participant_id ?? null,
-      reuserId: input.reuserId,
-      key: input.key,
-      useId: input.useId,
-    });
-    const unlocked = yield* recordCredits(credits, input.projectId);
-    return unlocked.get(input.reuserId) ?? [];
   });
 
   const recordTurn = Effect.fn("LogicPacksUsage.recordTurn")(
@@ -792,8 +712,6 @@ const make = Effect.gen(function* () {
     recordTurn,
     observeRpc,
     recordActivity,
-    recordPackPublished,
-    recordPackReused,
     leaderboard,
     achievements,
     setSharing,

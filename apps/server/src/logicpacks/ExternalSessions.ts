@@ -69,7 +69,7 @@ export type IngestResult =
     }
   | {
       readonly linked: false;
-      readonly reason: "no_project" | "not_shared" | "not_owner" | "thread_deleted";
+      readonly reason: "no_project" | "not_shared" | "not_owner" | "thread_deleted" | "read_only";
       readonly message: string;
     };
 
@@ -490,6 +490,13 @@ const make = Effect.gen(function* () {
         reason: "no_project",
         message:
           "No LogicPacks project matches this folder or its git remote. Add the folder in LogicPacks, or Sync it and open it there.",
+      } satisfies IngestResult;
+    }
+    if (caller.kind === "member" && access.isReadOnly(caller.userId, project.id)) {
+      return {
+        linked: false,
+        reason: "read_only",
+        message: "You have read-only access to this workspace. Ask an owner to change it.",
       } satisfies IngestResult;
     }
     if (existing !== null) {

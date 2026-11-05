@@ -1,11 +1,13 @@
 import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
-import { memo, type ReactNode } from "react";
+import { memo, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 
+import { TITLEBAR_CONTROLS_CHANGED_EVENT } from "./useChatHeaderBudget";
 import { LayoutModeSwitcher } from "./LayoutModeSwitcher";
+import { OverflowToolbar, type OverflowToolbarItem } from "./OverflowToolbar";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
@@ -28,6 +30,10 @@ export interface PanelLayoutControlsProps {
   rightPanelShortcutLabel: string | null;
   rightPanelUnavailableLabel?: string;
   layoutShortcutLabel?: string | null;
+  /** The maximize toggle (shown while the panel is open); it joins the row so it can overflow too. */
+  maximizeControl?: ReactNode;
+  /** Pixels the row may use; null = unlimited. Controls that do not fit move into "more". */
+  budget?: number | null;
   onToggleTerminal: () => void;
   onToggleThreadPanel: () => void;
   onToggleRightPanel: () => void;
@@ -49,6 +55,8 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelShortcutLabel,
   rightPanelUnavailableLabel = "Right panel is unavailable",
   layoutShortcutLabel = null,
+  maximizeControl = null,
+  budget = null,
   onToggleTerminal,
   onToggleThreadPanel,
   onToggleRightPanel,
@@ -81,15 +89,8 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
     </Tooltip>
   );
 
-  return (
-    <div
-      className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
-      data-panel-layout-controls
-    >
-      {showRightPanelControl ? <LayoutModeSwitcher shortcutLabel={layoutShortcutLabel} /> : null}
-      {showThreadPanelControl ? threadPanelControl : null}
-      {showTerminalControl ? (
-        <Tooltip>
+  const terminalControl = showTerminalControl ? (
+    <Tooltip>
           <TooltipTrigger render={<span className="flex shrink-0" />}>
             <Toggle
               className="shrink-0 [-webkit-app-region:no-drag]"
@@ -109,9 +110,9 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               : "Terminal drawer is unavailable"}
           </TooltipPopup>
         </Tooltip>
-      ) : null}
-      {showRightPanelControl ? (
-        <Tooltip>
+  ) : null;
+  const rightPanelControl = showRightPanelControl ? (
+    <Tooltip>
           <TooltipTrigger render={<span className="flex shrink-0" />}>
             <Toggle
               className="shrink-0 [-webkit-app-region:no-drag]"
@@ -133,8 +134,29 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               : rightPanelUnavailableLabel}
           </TooltipPopup>
         </Tooltip>
-      ) : null}
-    </div>
+  ) : null;
+  const items: OverflowToolbarItem[] = [];
+  if (maximizeControl) items.push({ id: "maximize", priority: 3, node: maximizeControl });
+  if (showRightPanelControl) {
+    items.push({
+      id: "layout",
+      priority: 2,
+      node: <LayoutModeSwitcher shortcutLabel={layoutShortcutLabel} />,
+    });
+  }
+  if (showThreadPanelControl) items.push({ id: "thread-panel", priority: 5, node: threadPanelControl });
+  if (terminalControl) items.push({ id: "terminal", priority: 4, node: terminalControl });
+  if (rightPanelControl) items.push({ id: "right-panel", priority: 1, node: rightPanelControl });
+
+  return (
+    <OverflowToolbar
+      items={items}
+      budget={budget}
+      gap={4}
+      label="More layout controls"
+      className="h-full [-webkit-app-region:no-drag]"
+      testId="lp-titlebar-controls"
+    />
   );
 });
 
@@ -179,40 +201,69 @@ export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
   );
 }
 
-/** The window's top-right panel controls, with the maximize toggle while the panel is open. */
+/** What the window's top-right controls hand to their row. */
+export interface TitlebarControlsSlot {
+  readonly maximizeControl: ReactNode;
+  readonly budget: number | null;
+}
+
+/**
+ * The window's top-right panel controls, with the maximize toggle while the panel is open.
+ * They are fixed to the window corner, which on a narrow chat column is the column's header:
+ * the row may use at most half of that column, and what does not fit moves into "more".
+ */
 export function WorkspaceTitlebarControls(props: {
   readonly showMaximizeControl: boolean;
   readonly rightPanelOpen: boolean;
-  readonly animationsActive: boolean;
   readonly maximized: boolean;
   readonly onToggleMaximized: () => void;
-  readonly children: ReactNode;
+  readonly children: (slot: TitlebarControlsSlot) => ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [budget, setBudget] = useState<number | null>(null);
+  // oxlint-disable-next-line logicpacks/no-unreasoned-state-sync -- measures the chat column the fixed controls sit over, and tells the header when the controls change size
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => {
+      const column = document.querySelector<HTMLElement>("[data-chat-column]");
+      const right = element.getBoundingClientRect().right;
+      const box = column?.getBoundingClientRect();
+      const over = box !== undefined && right <= box.right + 2 && right > box.left;
+      const next = over ? Math.max(0, Math.floor(box.width * 0.5)) : null;
+      setBudget((previous) => (previous === next ? previous : next));
+      window.dispatchEvent(new Event(TITLEBAR_CONTROLS_CHANGED_EVENT));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    const column = document.querySelector<HTMLElement>("[data-chat-column]");
+    if (column) observer.observe(column);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      window.dispatchEvent(new Event(TITLEBAR_CONTROLS_CHANGED_EVENT));
+    };
+  }, []);
   return (
     <div
+      ref={ref}
       className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
-      {props.showMaximizeControl ? (
-        <span
-          aria-hidden={!props.rightPanelOpen}
-          className={cn(
-            "flex shrink-0",
-            props.animationsActive &&
-              "motion-safe:transition-opacity motion-safe:duration-(--panel-animation-duration) motion-safe:ease-out",
-            props.rightPanelOpen
-              ? "pointer-events-auto opacity-100"
-              : "pointer-events-none absolute right-full mr-1 opacity-0",
-          )}
-          inert={!props.rightPanelOpen}
-        >
-          <RightPanelMaximizeControl
-            maximized={props.maximized}
-            onToggle={props.onToggleMaximized}
-          />
-        </span>
-      ) : null}
-      <div className="pointer-events-auto flex h-full items-center">{props.children}</div>
+      <div className="pointer-events-auto flex h-full items-center">
+        {props.children({
+          budget,
+          maximizeControl:
+            props.showMaximizeControl && props.rightPanelOpen ? (
+              <RightPanelMaximizeControl
+                maximized={props.maximized}
+                onToggle={props.onToggleMaximized}
+              />
+            ) : null,
+        })}
+      </div>
     </div>
   );
 }

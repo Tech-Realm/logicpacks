@@ -42,6 +42,7 @@ import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./ReusableDevAuth.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
+import { isRelayedHeaders, sessionAllowedThroughRelay } from "../shareRelay/relayTrust.ts";
 import { DESKTOP_RENDERER_ORIGINS } from "../httpCors.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
@@ -756,7 +757,29 @@ export const make = Effect.gen(function* () {
     ...config.devAllowedOrigins,
   ]);
 
+  // Requests that came through the public-link relay may only be signed-in members (see shareRelay/relayTrust.ts).
+  const refuseOwnerOverRelay = <E, R>(
+    request: HttpServerRequest.HttpServerRequest,
+    effect: Effect.Effect<AuthenticatedSession, E, R>,
+  ): Effect.Effect<AuthenticatedSession, E | ServerAuthInvalidCredentialError, R> =>
+    isRelayedHeaders(request.headers)
+      ? effect.pipe(
+          Effect.filterOrFail(
+            (session) => sessionAllowedThroughRelay(session.subject),
+            () =>
+              new ServerAuthInvalidCredentialError({
+                diagnostic: "This session cannot be used through a public share link.",
+              }),
+          ),
+        )
+      : effect;
+
   const authenticateRequest = (
+    request: HttpServerRequest.HttpServerRequest,
+  ): Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError> =>
+    refuseOwnerOverRelay(request, authenticateRequestUnchecked(request));
+
+  const authenticateRequestUnchecked = (
     request: HttpServerRequest.HttpServerRequest,
   ): Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError> => {
     const dpopToken = parseDpopToken(request);
@@ -1264,6 +1287,11 @@ export const make = Effect.gen(function* () {
               Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
               Effect.provideService(Crypto.Crypto, crypto),
             );
+          }
+          if (isRelayedHeaders(request.headers) && !sessionAllowedThroughRelay(session.subject)) {
+            return yield* new ServerAuthInvalidCredentialError({
+              diagnostic: "This session cannot be used through a public share link.",
+            });
           }
           return {
             sessionId: session.sessionId,

@@ -1,4 +1,3 @@
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -135,10 +134,9 @@ export type RecipeIntegration = typeof RecipeIntegration.Type;
 // ── Portable context ────────────────────────────────────────────────────────
 
 /**
- * What a pack carries from one place to another: the project ledger's summary,
- * a thread's decisions, references into files and apps, and workflow steps.
- * A thread saved as a pack writes this; "Use in…" hands it to another thread,
- * app or project, and agents read it through the ledger tools (`packs`).
+ * Optional portable context a recipe file may carry: a ledger summary, decisions, references
+ * into files and apps, and workflow steps. Nothing writes it any more (saved packs were
+ * removed); it stays in the schema so older files still decode.
  */
 export const RecipeContextReferenceKind = Schema.Literals([
   "file",
@@ -197,9 +195,6 @@ export const RecipeContext = Schema.Struct({
 });
 export type RecipeContext = typeof RecipeContext.Type;
 
-/** Saved packs in a project: `.logicpacks/packs/<id>.json`, committed so Sync carries them. */
-export const PROJECT_PACKS_DIR = ".logicpacks/packs";
-
 // ── The manifest ────────────────────────────────────────────────────────────
 
 export const RecipeManifest = Schema.Struct({
@@ -217,9 +212,9 @@ export const RecipeManifest = Schema.Struct({
     Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
   ),
   integration: Schema.optional(RecipeIntegration),
-  /** Portable context: set on a pack saved from a thread or written by hand. */
+  /** Legacy portable context (see RecipeContext); read-only, nothing writes it. */
   context: Schema.optional(RecipeContext),
-  /** Set when the recipe was converted from a v1 pack. */
+  /** Legacy: set on recipes converted from a v1 pack. */
   fromPack: Schema.optional(
     Schema.Struct({ name: TrimmedNonEmptyString, version: TrimmedNonEmptyString }),
   ),
@@ -244,82 +239,3 @@ export const recipesForSurface = (
   recipes.filter(
     (candidate) => candidate.availability !== "coming-soon" && candidate.surfaces.includes(surface),
   );
-
-// ── v1 packs ────────────────────────────────────────────────────────────────
-
-const asRecord = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-const asString = (value: unknown): string | undefined =>
-  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-
-/** The `recipe` section a v1 pack.json could carry (app-recipes, 2026-10). */
-const V1PackRecipeSection = Schema.Struct({
-  ...RecipeIntegration.fields,
-  id: RecipeId,
-  stage: Schema.Literals(["default", "mvp", "coming-soon"]),
-  runtimes: Schema.NonEmptyArray(RecipeSurface),
-});
-const decodeV1PackRecipeSection = Schema.decodeUnknownOption(V1PackRecipeSection);
-const decodeRecipeContext = Schema.decodeUnknownOption(RecipeContext);
-
-/**
- * Converts a v1 `pack.json` into a recipe. Identity, the one-line capability
- * and the integration knowledge (as agent instructions) survive; a `recipe`
- * section becomes the recipe's id, surfaces and app integration.
- */
-export const recipeFromPackManifest = (pack: unknown): RecipeManifest | null => {
-  const identity = asRecord(asRecord(pack)["identity"]);
-  const name = asString(identity["name"]);
-  const version = asString(identity["version"]);
-  if (name === undefined || version === undefined) return null;
-  const capability = asRecord(asRecord(pack)["capability"]);
-  const knowledge = asRecord(asRecord(pack)["knowledge"]);
-  const integrationNotes = Array.isArray(knowledge["integration"]) ? knowledge["integration"] : [];
-  const notes = integrationNotes
-    .map((entry) => asString(asRecord(entry)["text"]) ?? asString(asRecord(entry)["claim"]))
-    .filter((text): text is string => text !== undefined);
-  const summary =
-    asString(identity["summary"]) ?? asString(capability["does"]) ?? `Converted from ${name}.`;
-  const section = Option.getOrUndefined(decodeV1PackRecipeSection(asRecord(pack)["recipe"]));
-  const id =
-    section?.id ??
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 64)
-      .replace(/-+$/g, "");
-  if (id.length === 0) return null;
-  // A pack.json may carry portable context in the same shape a saved thread writes.
-  const context = Option.getOrUndefined(decodeRecipeContext(asRecord(pack)["context"]));
-  const app =
-    section === undefined
-      ? {}
-      : (() => {
-          const { id: _id, stage, runtimes, ...integration } = section;
-          return {
-            surfaces: runtimes,
-            availability:
-              stage === "coming-soon"
-                ? ("coming-soon" as const)
-                : stage === "mvp"
-                  ? ("preview" as const)
-                  : ("available" as const),
-            apps: [id],
-            integration,
-          };
-        })();
-  return {
-    formatVersion: RECIPE_FORMAT_VERSION,
-    id,
-    name: (asString(identity["displayName"]) ?? name).slice(0, 64),
-    summary: summary.slice(0, 200),
-    surfaces: ["web", "desktop"],
-    availability: "available",
-    apps: [],
-    ...(notes.length === 0 ? {} : { agentInstructions: notes.join("\n").slice(0, 8_000) }),
-    ...app,
-    ...(context === undefined ? {} : { context }),
-    fromPack: { name, version },
-  };
-};

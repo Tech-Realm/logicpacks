@@ -320,7 +320,7 @@ type TurnTerminal =
 type Rule = Permission.Rule;
 type RulesPolicy = Pick<
   ProviderAdapter.ProviderAdapterV2RuntimePolicy,
-  "runtimeMode" | "interactionMode"
+  "runtimeMode" | "interactionMode" | "toolLimits"
 >;
 type NativeForm = EventOf<"form.created">["data"]["form"];
 
@@ -385,6 +385,13 @@ const sessionRules = (
   ...(policy.interactionMode === "plan" ? [rule("edit", "deny")] : []),
   ...paths,
   ...mcpRules(mcpServerName),
+  // A member's access zones are the last word: later rules win, so nothing above re-allows these.
+  ...(policy.toolLimits === undefined
+    ? []
+    : [
+        ...(policy.toolLimits.shell ? [] : [rule("shell", "deny")]),
+        ...(policy.toolLimits.edits ? [] : [rule("edit", "deny")]),
+      ]),
 ];
 
 const sameRules = (left: ReadonlyArray<Rule> | undefined, right: ReadonlyArray<Rule>) =>

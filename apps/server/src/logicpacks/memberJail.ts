@@ -142,72 +142,105 @@ export const collectPayloadPaths = (payload: unknown): ReadonlyArray<PayloadPath
 
 const hasDotDotSegment = (value: string) => value.split(/[\\/]+/).some((part) => part === "..");
 
+/** The path flavour of the host running the server: `NodePath` (posix or win32). Tests pass `win32`. */
+export type PathApi = NodePath.PlatformPath;
+
+const isWindowsApi = (api: PathApi) => api.sep === "\\";
+
+/** `\\?\C:\x` is the same place as `C:\x`; `\\?\UNC\` and `\\host\share` stay network paths. */
+const stripExtendedPrefix = (value: string) => value.replace(/^\\\\[?.]\\(?=[A-Za-z]:[\\/])/, "");
+
 /**
  * The absolute path a member's value names, with `~` as their member root. Null when it is
- * refused outright: `..` segments, `~otheruser`, Windows or network paths. `"unanchored"` is a
- * relative value with nothing to anchor it to; the handler anchors it to a checked root.
+ * refused outright: `..` segments, `~otheruser`, network paths, and drive paths on a host that
+ * has no drives. A Windows host names its projects `C:\...`, so there they are the normal case.
+ * `"unanchored"` is a relative value with nothing to anchor it to; the handler anchors it to a
+ * checked root.
  */
 export const resolveMemberPath = (
   value: string,
   base: string | null,
   memberRoot: string,
+  api: PathApi = NodePath,
 ): string | null | "unanchored" => {
-  const trimmed = value.trim();
+  const windows = isWindowsApi(api);
+  const trimmed = windows ? stripExtendedPrefix(value.trim()) : value.trim();
   if (trimmed.length === 0) return "unanchored";
   if (hasDotDotSegment(trimmed)) return null;
-  if (trimmed.includes("\0") || trimmed.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+  if (trimmed.includes("\0") || trimmed.startsWith("\\\\")) return null;
+  if (!windows && /^[A-Za-z]:([\\/]|$)/.test(trimmed)) return null;
+  if (trimmed === "~") return memberRoot;
+  if (trimmed.startsWith("~/") || (windows && trimmed.startsWith("~\\"))) {
+    return api.join(memberRoot, trimmed.slice(2));
+  }
+  if (trimmed.startsWith("~")) return null;
+  // `C:foo` and `\foo` are relative to a drive or the current drive on Windows: never a name we accept.
+  if (windows && (/^[A-Za-z]:(?![\\/])/.test(trimmed) || /^[\\/](?![\\/])/.test(trimmed))) {
     return null;
   }
-  if (trimmed === "~") return memberRoot;
-  if (trimmed.startsWith("~/")) return NodePath.join(memberRoot, trimmed.slice(2));
-  if (trimmed.startsWith("~")) return null;
-  if (NodePath.isAbsolute(trimmed)) return NodePath.resolve(trimmed);
+  if (api.isAbsolute(trimmed)) return api.resolve(trimmed);
   if (base === null) return "unanchored";
-  const anchored = resolveMemberPath(base, null, memberRoot);
+  const anchored = resolveMemberPath(base, null, memberRoot, api);
   if (anchored === null || anchored === "unanchored")
     return anchored === null ? null : "unanchored";
-  return NodePath.resolve(anchored, trimmed);
+  return api.resolve(anchored, trimmed);
 };
 
 /** realpath of the deepest existing ancestor, with the rest appended: symlinks cannot escape. */
-export const realpathLenient = (absolute: string): string => {
-  let current = NodePath.resolve(absolute);
+export const realpathLenient = (absolute: string, api: PathApi = NodePath): string => {
+  const windows = isWindowsApi(api);
+  // The native call expands 8.3 short names (`RUNNER~1`) that the JS one keeps, on Windows.
+  const realpath = windows && api === NodePath ? NodeFS.realpathSync.native : NodeFS.realpathSync;
+  let current = api.resolve(absolute);
   const rest: Array<string> = [];
   for (;;) {
     try {
-      const real = NodeFS.realpathSync(current);
-      return rest.length === 0 ? real : NodePath.join(real, ...rest.reverse());
+      const real = windows ? stripExtendedPrefix(realpath(current)) : realpath(current);
+      return rest.length === 0 ? real : api.join(real, ...rest.reverse());
     } catch {
-      const parent = NodePath.dirname(current);
-      if (parent === current) return NodePath.resolve(absolute);
-      rest.push(NodePath.basename(current));
+      const parent = api.dirname(current);
+      if (parent === current) return api.resolve(absolute);
+      rest.push(api.basename(current));
       current = parent;
     }
   }
 };
 
-export const isWithin = (root: string, candidate: string) => {
-  const trimmed = root.length > 1 && root.endsWith("/") ? root.slice(0, -1) : root;
-  return candidate === trimmed || candidate.startsWith(`${trimmed}/`);
+/**
+ * Whether `candidate` is `root` or below it. Windows paths compare case-insensitively and
+ * accept either separator (`C:\Users\Me` is `c:/users/me`); a relative side is never inside.
+ */
+export const isWithin = (root: string, candidate: string, api: PathApi = NodePath) => {
+  if (!api.isAbsolute(root) || !api.isAbsolute(candidate)) return false;
+  const rel = api.relative(root, candidate);
+  if (rel === "") return true;
+  return rel !== ".." && !rel.startsWith(`..${api.sep}`) && !api.isAbsolute(rel);
 };
 
 /**
  * The project a git worktree under `worktreesDir` belongs to: `<worktreesDir>/<repo>/<branch>`
  * has a `.git` file pointing at `<project>/.git/worktrees/<name>`.
  */
-export const worktreeProjectRoot = (candidate: string, worktreesDir: string): string | null => {
-  const relative = NodePath.relative(worktreesDir, candidate);
-  if (relative.startsWith("..") || NodePath.isAbsolute(relative)) return null;
-  const [repo, branch] = relative.split(NodePath.sep);
+export const worktreeProjectRoot = (
+  candidate: string,
+  worktreesDir: string,
+  api: PathApi = NodePath,
+): string | null => {
+  const relative = api.relative(worktreesDir, candidate);
+  if (relative.startsWith("..") || api.isAbsolute(relative)) return null;
+  const [repo, branch] = relative.split(api.sep);
   if (!repo || !branch) return null;
   try {
-    const dotGit = NodeFS.readFileSync(NodePath.join(worktreesDir, repo, branch, ".git"), "utf8");
+    const dotGit = NodeFS.readFileSync(api.join(worktreesDir, repo, branch, ".git"), "utf8");
     const match = /^gitdir:\s*(.+)$/m.exec(dotGit);
     if (match === null) return null;
-    const gitDir = NodePath.resolve(NodePath.join(worktreesDir, repo, branch), match[1]!.trim());
-    const marker = `${NodePath.sep}.git${NodePath.sep}worktrees${NodePath.sep}`;
-    const at = gitDir.lastIndexOf(marker);
-    return at <= 0 ? null : realpathLenient(gitDir.slice(0, at));
+    // Git writes `C:/x/.git/worktrees/b` on Windows: resolve normalizes it to the native form.
+    const gitDir = api.resolve(api.join(worktreesDir, repo, branch), match[1]!.trim());
+    const marker = `${api.sep}.git${api.sep}worktrees${api.sep}`;
+    const at = (isWindowsApi(api) ? gitDir.toLowerCase() : gitDir).lastIndexOf(
+      isWindowsApi(api) ? marker.toLowerCase() : marker,
+    );
+    return at <= 0 ? null : realpathLenient(gitDir.slice(0, at), api);
   } catch {
     return null;
   }
@@ -218,31 +251,38 @@ export interface MemberJail {
   /** Real paths the member may touch: their root and their projects' roots. */
   readonly roots: ReadonlyArray<string>;
   readonly worktreesDir: string;
+  readonly api: PathApi;
 }
 
 export const makeMemberJail = (input: {
   readonly memberRoot: string;
   readonly projectRoots: ReadonlyArray<string>;
   readonly worktreesDir: string;
-}): MemberJail => ({
-  memberRoot: input.memberRoot,
-  roots: [input.memberRoot, ...input.projectRoots].map(realpathLenient),
-  worktreesDir: realpathLenient(input.worktreesDir),
-});
+  readonly api?: PathApi;
+}): MemberJail => {
+  const api = input.api ?? NodePath;
+  return {
+    memberRoot: input.memberRoot,
+    roots: [input.memberRoot, ...input.projectRoots].map((root) => realpathLenient(root, api)),
+    worktreesDir: realpathLenient(input.worktreesDir, api),
+    api,
+  };
+};
 
 /** Whether a member may name this absolute path. */
 export const jailAllows = (jail: MemberJail, absolute: string): boolean => {
-  const real = realpathLenient(absolute);
-  if (jail.roots.some((root) => isWithin(root, real))) return true;
-  if (!isWithin(jail.worktreesDir, real)) return false;
-  const owner = worktreeProjectRoot(real, jail.worktreesDir);
-  return owner !== null && jail.roots.slice(1).some((root) => isWithin(root, owner));
+  const { api } = jail;
+  const real = realpathLenient(absolute, api);
+  if (jail.roots.some((root) => isWithin(root, real, api))) return true;
+  if (!isWithin(jail.worktreesDir, real, api)) return false;
+  const owner = worktreeProjectRoot(real, jail.worktreesDir, api);
+  return owner !== null && jail.roots.slice(1).some((root) => isWithin(root, owner, api));
 };
 
 /** The first path in a payload the member may not reach, or null when all are inside. */
 export const firstJailViolation = (jail: MemberJail, payload: unknown): PayloadPath | null => {
   for (const entry of collectPayloadPaths(payload)) {
-    const resolved = resolveMemberPath(entry.value, entry.base, jail.memberRoot);
+    const resolved = resolveMemberPath(entry.value, entry.base, jail.memberRoot, jail.api);
     if (resolved === "unanchored") continue;
     if (resolved === null || !jailAllows(jail, resolved)) return entry;
   }
@@ -262,3 +302,56 @@ export const MEMBER_HOME_METHODS: ReadonlySet<string> = new Set([
 export const usesTildeOutsideHomeMethods = (method: string, payload: unknown): boolean =>
   !MEMBER_HOME_METHODS.has(method) &&
   collectPayloadPaths(payload).some((entry) => entry.value.trim().startsWith("~"));
+
+/**
+ * The folders a Files zone shares, as REAL paths. Empty entries share the whole project. A
+ * relative entry is inside the project: a `..`, an absolute-looking value or a symlink that leads
+ * out of the project's real root is rejected. An absolute entry is another folder the host chose
+ * on purpose (its real path is used). Windows: case-insensitive, either separator.
+ */
+export const resolveSharedFolders = (
+  projectRoot: string,
+  entries: ReadonlyArray<string>,
+  api: PathApi = NodePath,
+): { readonly folders: ReadonlyArray<string>; readonly rejected: ReadonlyArray<string> } => {
+  const root = realpathLenient(projectRoot, api);
+  if (entries.length === 0) return { folders: [root], rejected: [] };
+  const folders: Array<string> = [];
+  const rejected: Array<string> = [];
+  for (const entry of entries) {
+    const value = entry.trim();
+    if (value.length === 0 || value.includes("\0")) continue;
+    const windows = isWindowsApi(api);
+    const normalized = windows ? stripExtendedPrefix(value) : value;
+    if (windows && normalized.startsWith("\\\\")) {
+      rejected.push(entry);
+      continue;
+    }
+    if (api.isAbsolute(normalized) || (windows && /^[A-Za-z]:[\\/]/.test(normalized))) {
+      folders.push(realpathLenient(normalized, api));
+      continue;
+    }
+    if (
+      hasDotDotSegment(normalized) ||
+      normalized.startsWith("~") ||
+      normalized.startsWith("\\\\")
+    ) {
+      rejected.push(entry);
+      continue;
+    }
+    const real = realpathLenient(api.join(root, normalized), api);
+    if (isWithin(root, real, api)) folders.push(real);
+    else rejected.push(entry);
+  }
+  return { folders: [...new Set(folders)], rejected };
+};
+
+/** Whether the real path of `absolute` sits in one of the shared folders (symlinks and `..` cannot lead out). */
+export const folderAllows = (
+  folders: ReadonlyArray<string>,
+  absolute: string,
+  api: PathApi = NodePath,
+): boolean => {
+  const real = realpathLenient(absolute, api);
+  return folders.some((folder) => isWithin(folder, real, api));
+};

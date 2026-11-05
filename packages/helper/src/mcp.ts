@@ -99,12 +99,6 @@ export const LEDGER_TOOLS = [
     },
   },
   {
-    name: "packs",
-    description:
-      "Packs saved in this project carry context between threads and apps: summary, decisions, file and app references, workflow steps. No query lists them; query = a pack id reads one in full.",
-    inputSchema: { type: "object", properties: { query: { type: "string" } } },
-  },
-  {
     name: "ask",
     description:
       "Ask a teammate's agent a question (`to`: a person's name). Their agent answers with reply; the answer shows in your inbox.",

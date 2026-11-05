@@ -11,6 +11,7 @@ import {
   type AuthEnvironmentScope,
   type OrchestrationV2ShellStreamItem,
 } from "@logicpacks/contracts";
+import { isWithin } from "./memberJail.ts";
 
 /**
  * A LogicPacks member's session subject. Any other subject (desktop owner, paired
@@ -146,10 +147,8 @@ export const requiresOwner = (method: string, payload: unknown): boolean =>
   typeof payload === "object" &&
   (payload as Record<string, unknown>)["type"] === "project.delete";
 
-export const pathIsWithin = (root: string, path: string) => {
-  const trimmed = root.endsWith("/") ? root.slice(0, -1) : root;
-  return path === trimmed || path.startsWith(`${trimmed}/`);
-};
+/** `path` is `root` or below it, for the host's own paths (Windows hosts: `C:\\...`, either separator, any case). */
+export const pathIsWithin = (root: string, path: string) => isWithin(root, path);
 
 /** A working directory is reachable when it sits inside a visible project or a LogicPacks worktree. */
 export const cwdIsReachable = (

@@ -1,4 +1,5 @@
 import * as Clock from "effect/Clock";
+import { READ_ONLY_MESSAGE, refuseIfReadOnly } from "./readOnly.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -14,8 +15,6 @@ import { resolveHelperCaller } from "./helperHttp.ts";
 import { json, queryParam, readBody, resolveCaller } from "./http.ts";
 import { describeGoal, GoalPlan, scopeText } from "./goals.ts";
 import { describeThread } from "./ledger.ts";
-import { packsReader, type PacksReader } from "./packsHttp.ts";
-import { featureGate, participantHas } from "./featureHttp.ts";
 import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { ProjectGoals } from "./ProjectGoals.ts";
 import { describeConflicts, LedgerError, ProjectLedger } from "./ProjectLedger.ts";
@@ -112,6 +111,8 @@ const sendRoute = HttpRouter.add(
     if (body === null) return json({ error: "bad_request" }, 400);
     const projectId = yield* allowedThread(caller, body.threadId);
     if (projectId === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, projectId);
+    if (readOnly !== null) return readOnly;
     const ledger = yield* ProjectLedger;
     const message = yield* ledger.send({
       projectId,
@@ -163,6 +164,8 @@ const mergeRoute = HttpRouter.add(
     if (body === null) return json({ error: "bad_request" }, 400);
     const projectId = yield* allowedThread(caller, body.threadId);
     if (projectId === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, projectId);
+    if (readOnly !== null) return readOnly;
     const ledger = yield* ProjectLedger;
     const negotiation = yield* ledger.proposeMerge({
       projectId,
@@ -191,7 +194,10 @@ const decideRoute = HttpRouter.add(
     if (caller === null) return unauthenticated;
     const body = yield* readBody(DecideRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    if ((yield* allowedThread(caller, body.threadId)) === null) return notFound;
+    const threadProject = yield* allowedThread(caller, body.threadId);
+    if (threadProject === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, threadProject);
+    if (readOnly !== null) return readOnly;
     const ledger = yield* ProjectLedger;
     const negotiation = yield* ledger.decide({
       negotiationId: body.negotiationId,
@@ -218,7 +224,10 @@ const branchRoute = HttpRouter.add(
     if (caller === null) return unauthenticated;
     const body = yield* readBody(BranchRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    if ((yield* allowedThread(caller, body.threadId)) === null) return notFound;
+    const threadProject = yield* allowedThread(caller, body.threadId);
+    if (threadProject === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, threadProject);
+    if (readOnly !== null) return readOnly;
     const ledger = yield* ProjectLedger;
     return json(
       yield* ledger.branch({
@@ -227,6 +236,76 @@ const branchRoute = HttpRouter.add(
         title: body.title,
       }),
     );
+  }).pipe(Effect.catchTags({ LedgerError: ledgerErrorResponse })),
+);
+
+const KeepBothRequest = Schema.Struct({ threadId: Schema.String, conflictId: Schema.String });
+
+/** Merge both on a conflict whose versions are saved: every version goes into the file, no agents needed. */
+const keepBothRoute = HttpRouter.add(
+  "POST",
+  "/api/lp/ledger/keep-both",
+  Effect.gen(function* () {
+    const caller = yield* signedIn;
+    if (caller === null) return unauthenticated;
+    const body = yield* readBody(KeepBothRequest);
+    if (body === null) return json({ error: "bad_request" }, 400);
+    const projectId = yield* allowedThread(caller, body.threadId);
+    if (projectId === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, projectId);
+    if (readOnly !== null) return readOnly;
+    const ledger = yield* ProjectLedger;
+    const merged = yield* ledger.keepBoth({
+      projectId,
+      conflictId: body.conflictId,
+      by: yield* callerName(caller),
+    });
+    return json(merged);
+  }).pipe(Effect.catchTags({ LedgerError: ledgerErrorResponse })),
+);
+
+const RestoreRequest = Schema.Struct({
+  threadId: Schema.String,
+  conflictId: Schema.String,
+  /** Whose saved version to put back. */
+  versionThreadId: Schema.String,
+});
+
+/** Restore a saved version: the project owner may restore any, a person only their own thread's. */
+const restoreRoute = HttpRouter.add(
+  "POST",
+  "/api/lp/ledger/restore",
+  Effect.gen(function* () {
+    const caller = yield* signedIn;
+    if (caller === null) return unauthenticated;
+    const body = yield* readBody(RestoreRequest);
+    if (body === null) return json({ error: "bad_request" }, 400);
+    const projectId = yield* allowedThread(caller, body.threadId);
+    if (projectId === null) return notFound;
+    const readOnly = yield* refuseIfReadOnly(caller, projectId);
+    if (readOnly !== null) return readOnly;
+    const ledger = yield* ProjectLedger;
+    if (caller.kind === "member") {
+      const access = yield* LogicPacksAccess;
+      const role = access.roleOf(caller.userId, projectId);
+      const people = yield* ledger.threadPeople(body.versionThreadId);
+      if (role === "viewer" || (role !== "owner" && !people.includes(caller.userId))) {
+        return json(
+          {
+            error: "forbidden",
+            message: "Only the project owner or the person whose version it is can restore it.",
+          },
+          403,
+        );
+      }
+    }
+    const restored = yield* ledger.restoreVersion({
+      projectId,
+      conflictId: body.conflictId,
+      versionThreadId: body.versionThreadId,
+      by: yield* callerName(caller),
+    });
+    return json(restored);
   }).pipe(Effect.catchTags({ LedgerError: ledgerErrorResponse })),
 );
 
@@ -239,8 +318,15 @@ export const LedgerToolName = Schema.Literals([
   "conflicts",
   "propose_merge",
   "note",
-  "packs",
   "goals",
+  "goal_plan",
+  "goal_update",
+]);
+
+const LEDGER_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  "send_to_thread",
+  "propose_merge",
+  "note",
   "goal_plan",
   "goal_update",
 ]);
@@ -293,11 +379,22 @@ export const runLedgerTool = Effect.fn("logicpacks.ledger.runTool")(function* (i
   readonly name: string;
   readonly tool: typeof LedgerToolName.Type;
   readonly args: LedgerToolArgs;
-  /** Reads the project's packs; without it the `packs` tool says it is unavailable here. */
-  readonly readPacks?: PacksReader;
 }) {
   const ledger = yield* ProjectLedger;
   const { args } = input;
+  // An agent acts for its thread's owner; a Read only owner's agent changes nothing, even one
+  // that was already running when the seat was changed.
+  if (LEDGER_WRITE_TOOLS.has(input.tool) && input.threadId !== null) {
+    const access = yield* Effect.serviceOption(LogicPacksAccess);
+    if (access._tag === "Some") {
+      const owner = (yield* ledger.view(input.projectId)).threads.find(
+        (thread) => thread.threadId === input.threadId,
+      )?.members[0];
+      if (owner !== undefined && access.value.isReadOnly(owner.id, input.projectId)) {
+        return yield* new LedgerError({ reason: "forbidden", message: READ_ONLY_MESSAGE });
+      }
+    }
+  }
   switch (input.tool) {
     case "threads": {
       const view = yield* ledger.view(input.projectId);
@@ -431,25 +528,6 @@ export const runLedgerTool = Effect.fn("logicpacks.ledger.runTool")(function* (i
         ? `Marked "${milestone?.title}" done. ${goal.ownerName} reviews it against the criteria.`
         : `"${milestone?.title}" is ${args.status.replace("_", " ")}.`;
     }
-    case "packs":
-      // `query` names a pack to read in full; without it, the project's packs are listed.
-      if (input.readPacks === undefined) return "Packs are not available here.";
-      {
-        // Agents act for the person whose thread they run in; packs are a gated feature.
-        const owner =
-          input.threadId === null
-            ? null
-            : ((yield* ledger.view(input.projectId)).threads.find(
-                (t) => t.threadId === input.threadId,
-              )?.members[0]?.id ?? null);
-        if (owner !== null && !(yield* participantHas(owner, "packs"))) {
-          return yield* new LedgerError({
-            reason: "forbidden",
-            message: "feature_locked: Packs is not unlocked for this account.",
-          });
-        }
-      }
-      return yield* input.readPacks(input.projectId, args.query);
     case "note": {
       if (input.threadId === null) {
         return yield* new LedgerError({ reason: "invalid", message: "Only a thread can note." });
@@ -524,13 +602,13 @@ const helperToolRoute = HttpRouter.add(
     if (caller === null) return unauthenticated;
     const body = yield* readBody(HelperToolRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
-    if (body.tool === "packs") {
-      const locked = yield* featureGate("packs");
-      if (locked !== null) return locked;
-    }
     const sessions = yield* ExternalSessions;
     const context = yield* sessions.context(caller, body);
     if (!context.linked) return json({ error: "not_linked", message: context.message }, 404);
+    if (LEDGER_WRITE_TOOLS.has(body.tool)) {
+      const readOnly = yield* refuseIfReadOnly(caller, context.projectId);
+      if (readOnly !== null) return readOnly;
+    }
     const ledger = yield* ProjectLedger;
     const own =
       body.source !== undefined && body.sessionId !== undefined
@@ -544,7 +622,6 @@ const helperToolRoute = HttpRouter.add(
       name: yield* callerName(caller),
       tool: body.tool,
       args: body.args ?? {},
-      readPacks: yield* packsReader,
     });
     return json({ text, projectId: context.projectId, threadId });
   }).pipe(
@@ -564,5 +641,7 @@ export const layer = Layer.mergeAll(
   mergeRoute,
   decideRoute,
   branchRoute,
+  keepBothRoute,
+  restoreRoute,
   helperToolRoute,
 );

@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import { asRecord, asString } from "./events.ts";
 import { commitFile, readPlanned } from "./fileOps.ts";
+import { selfLaunch } from "./launcher.ts";
 import { claudeHome, helperHome, loadConfig, writeJson } from "./store.ts";
 import { fetchContext } from "./sync.ts";
 
@@ -94,12 +95,12 @@ const readStdin = async (timeoutMs: number) =>
 
 /** Syncs in a detached process so a hook never holds up the agent. */
 const syncInBackground = (transcript: string) => {
-  const script = process.argv[1];
-  if (!script) return;
+  const self = selfLaunch();
   NodeChildProcess.spawn(
-    process.execPath,
-    [script, "sync", "--source", "claude", "--file", transcript],
+    self.command,
+    [...self.args, "sync", "--source", "claude", "--file", transcript],
     {
+      windowsHide: true,
       detached: true,
       stdio: "ignore",
       env: process.env,

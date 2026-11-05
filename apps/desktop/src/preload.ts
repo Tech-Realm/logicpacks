@@ -288,22 +288,29 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.UPDATE_STATE_CHANNEL, wrappedListener);
     };
   },
-  appShare: {
-    listWindows: () => ipcRenderer.invoke(IpcChannels.APP_SHARE_LIST_CHANNEL, undefined),
-    inject: (windowId, ev) =>
-      ipcRenderer.invoke(IpcChannels.APP_SHARE_INJECT_CHANNEL, { windowId, ev }),
-    permissions: () => ipcRenderer.invoke(IpcChannels.APP_SHARE_PERMISSIONS_CHANNEL, undefined),
-    requestAccessibility: () =>
-      ipcRenderer.invoke(IpcChannels.APP_SHARE_REQUEST_ACCESSIBILITY_CHANNEL, undefined),
-    arm: (armed) => ipcRenderer.invoke(IpcChannels.APP_SHARE_ARM_CHANNEL, armed),
-    onKill: (listener) => {
-      const wrappedListener = () => listener();
-      ipcRenderer.on(IpcChannels.APP_SHARE_KILL_CHANNEL, wrappedListener);
-      return () => {
-        ipcRenderer.removeListener(IpcChannels.APP_SHARE_KILL_CHANNEL, wrappedListener);
-      };
-    },
-  },
+  // App sharing (stream an app, input through lp-appctl, the hidden display) is macOS only:
+  // elsewhere the bridge is absent, so the app offers watching a Mac host but never hosting.
+  ...(clientPlatform !== "darwin"
+    ? {}
+    : {
+        appShare: {
+          listWindows: () => ipcRenderer.invoke(IpcChannels.APP_SHARE_LIST_CHANNEL, undefined),
+          inject: (windowId, ev) =>
+            ipcRenderer.invoke(IpcChannels.APP_SHARE_INJECT_CHANNEL, { windowId, ev }),
+          permissions: () =>
+            ipcRenderer.invoke(IpcChannels.APP_SHARE_PERMISSIONS_CHANNEL, undefined),
+          requestAccessibility: () =>
+            ipcRenderer.invoke(IpcChannels.APP_SHARE_REQUEST_ACCESSIBILITY_CHANNEL, undefined),
+          arm: (armed) => ipcRenderer.invoke(IpcChannels.APP_SHARE_ARM_CHANNEL, armed),
+          onKill: (listener) => {
+            const wrappedListener = () => listener();
+            ipcRenderer.on(IpcChannels.APP_SHARE_KILL_CHANNEL, wrappedListener);
+            return () => {
+              ipcRenderer.removeListener(IpcChannels.APP_SHARE_KILL_CHANNEL, wrappedListener);
+            };
+          },
+        },
+      }),
   webLinks: {
     setReady: (ready) => ipcRenderer.invoke(IpcChannels.WEB_LINK_READY_CHANNEL, ready),
     onOpen: (listener) => {

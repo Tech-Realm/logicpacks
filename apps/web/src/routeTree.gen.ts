@@ -52,7 +52,6 @@ import { Route as ChatSettingsAppearanceRouteImport } from './routes/_chat.setti
 import { Route as ChatSettingsAccessRouteImport } from './routes/_chat.settings.access'
 import { Route as ChatSettingsAboutRouteImport } from './routes/_chat.settings.about'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
-import { Route as ChatDemoPacksRouteImport } from './routes/_chat.demo.packs'
 import { Route as ChatDemoMachineRouteImport } from './routes/_chat.demo.machine'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 
@@ -274,11 +273,6 @@ const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
   path: '/draft/$draftId',
   getParentRoute: () => ChatRoute,
 } as any)
-const ChatDemoPacksRoute = ChatDemoPacksRouteImport.update({
-  id: '/demo/packs',
-  path: '/demo/packs',
-  getParentRoute: () => ChatRoute,
-} as any)
 const ChatDemoMachineRoute = ChatDemoMachineRouteImport.update({
   id: '/demo/machine',
   path: '/demo/machine',
@@ -308,7 +302,6 @@ export interface FileRoutesByFullPath {
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/demo/machine': typeof ChatDemoMachineRoute
-  '/demo/packs': typeof ChatDemoPacksRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/settings/about': typeof ChatSettingsAboutRoute
   '/settings/access': typeof ChatSettingsAccessRoute
@@ -355,7 +348,6 @@ export interface FileRoutesByTo {
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/demo/machine': typeof ChatDemoMachineRoute
-  '/demo/packs': typeof ChatDemoPacksRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/settings/about': typeof ChatSettingsAboutRoute
   '/settings/access': typeof ChatSettingsAccessRoute
@@ -404,7 +396,6 @@ export interface FileRoutesById {
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/demo/machine': typeof ChatDemoMachineRoute
-  '/_chat/demo/packs': typeof ChatDemoPacksRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/_chat/settings/about': typeof ChatSettingsAboutRoute
   '/_chat/settings/access': typeof ChatSettingsAccessRoute
@@ -453,7 +444,6 @@ export interface FileRouteTypes {
     | '/projects/$projectKey'
     | '/$environmentId/$threadId'
     | '/demo/machine'
-    | '/demo/packs'
     | '/draft/$draftId'
     | '/settings/about'
     | '/settings/access'
@@ -500,7 +490,6 @@ export interface FileRouteTypes {
     | '/'
     | '/$environmentId/$threadId'
     | '/demo/machine'
-    | '/demo/packs'
     | '/draft/$draftId'
     | '/settings/about'
     | '/settings/access'
@@ -548,7 +537,6 @@ export interface FileRouteTypes {
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/demo/machine'
-    | '/_chat/demo/packs'
     | '/_chat/draft/$draftId'
     | '/_chat/settings/about'
     | '/_chat/settings/access'
@@ -894,13 +882,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatDraftDraftIdRouteImport
       parentRoute: typeof ChatRoute
     }
-    '/_chat/demo/packs': {
-      id: '/_chat/demo/packs'
-      path: '/demo/packs'
-      fullPath: '/demo/packs'
-      preLoaderRoute: typeof ChatDemoPacksRouteImport
-      parentRoute: typeof ChatRoute
-    }
     '/_chat/demo/machine': {
       id: '/_chat/demo/machine'
       path: '/demo/machine'
@@ -991,7 +972,6 @@ interface ChatRouteChildren {
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
   ChatDemoMachineRoute: typeof ChatDemoMachineRoute
-  ChatDemoPacksRoute: typeof ChatDemoPacksRoute
   ChatDraftDraftIdRoute: typeof ChatDraftDraftIdRoute
 }
 
@@ -1004,7 +984,6 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,
   ChatDemoMachineRoute: ChatDemoMachineRoute,
-  ChatDemoPacksRoute: ChatDemoPacksRoute,
   ChatDraftDraftIdRoute: ChatDraftDraftIdRoute,
 }
 

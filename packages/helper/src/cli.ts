@@ -4,6 +4,8 @@ import * as NodePath from "node:path";
 
 import {
   agentsBlockBody,
+  claudeMcpInstalled,
+  claudeMcpMatches,
   codexMcpInstalled,
   type McpLaunch,
   writeAgentsBlock,
@@ -13,7 +15,7 @@ import {
 import { appCommand } from "./app.ts";
 import { callHost, gitInfo, OfflineError, RejectedError } from "./client.ts";
 import { cloneProject, syncDelayText } from "./clone.ts";
-import { installWatcher, uninstallWatcher, watcherRunning } from "./daemon.ts";
+import { installWatcher, uninstallWatcher, watcherInstalled, watcherRunning } from "./daemon.ts";
 import type { SessionSource } from "./events.ts";
 import { claudeHooksInstalled, runHook, writeClaudeHooks } from "./hooks.ts";
 import {
@@ -27,6 +29,7 @@ import {
 } from "./connect.ts";
 import { beginFileSession, describeBackups, describeSession, endFileSession } from "./fileOps.ts";
 import { jobsApply, jobsMine, jobsSearch, jobsShow, talentSearch } from "./jobs.ts";
+import { helperVersion, isStandalone, selfLaunch, selfPath } from "./launcher.ts";
 import { runMcpServer } from "./mcp.ts";
 import { runUninstall } from "./setup.ts";
 import { helperHome, isUnlinked, loadConfig, queuedFiles, saveConfig } from "./store.ts";
@@ -39,7 +42,7 @@ const HELP = `LogicPacks helper (lp): use LogicPacks from any agent harness, no 
   lp share | lp invite <email|name>          share this folder, add a teammate or print the invite link
   lp members | lp who [x] | lp agents        who is in the project, working on what, which agents are active
   lp send | lp ask | lp reply | lp inbox     talk to teammates and their agents
-  lp assist | lp packs | lp goals            Request assistance, packs, goals (beta)
+  lp goals                                   goals (beta)
   lp clone <project> [folder]                clone a project onto this computer and link it
   lp app ops | run <op> [args] | log         work in the apps the host shares (Blender, Resolve, any app)
   lp setup --agent <id>                      add the LogicPacks block to an agent's global instructions
@@ -47,6 +50,7 @@ const HELP = `LogicPacks helper (lp): use LogicPacks from any agent harness, no 
   lp help agents                             every command, for agents
 
   lp status                                  connection, this folder's project, queue
+  lp version                                 which lp this is
   lp stream --status                         what this folder's sessions send to the project
   lp pause | lp resume                       stop or restart streaming sessions
   lp unlink [folder] | lp link [folder]      keep a folder's sessions private, or share them again
@@ -55,15 +59,41 @@ const HELP = `LogicPacks helper (lp): use LogicPacks from any agent harness, no 
   lp uninstall                               remove every block, rules file, hook and MCP registration
   lp logout                                  forget this computer's token
 
+Add --json to any agent command for machine-readable output. Guide: https://logicpacks.io/setup.md
+`;
+
+const TALENT_HELP = `  lp assist                                  Request assistance (beta)
+
 Vetted freelancers (invite-only beta):
   lp jobs search [--role <role>] [--skills <a,b>]   open jobs (briefs redacted until you are accepted)
   lp jobs show <id>                           one job's brief
   lp jobs apply <id> --note "..." [--hours N] apply for it
   lp jobs mine                                your applications and accepted jobs
   lp talent search [words] [--role <role>] [--need "..."]   vetted freelancers for your project
-
-Add --json to any agent command for machine-readable output. Guide: https://logicpacks.io/setup.md
 `;
+
+/** The features this account has, asked of the host; none when offline or not connected. */
+const accountFeatures = async (): Promise<ReadonlyArray<string>> => {
+  try {
+    const config = loadConfig();
+    if (!config.server || !config.token) return [];
+    const result = await callHost<{ features?: ReadonlyArray<string> }>(
+      config,
+      "/api/lp/features",
+      {
+        timeoutMs: 2_500,
+      },
+    );
+    return result.features ?? [];
+  } catch {
+    return [];
+  }
+};
+
+const helpText = async () =>
+  (await accountFeatures()).includes("talent")
+    ? HELP.replace("\nAdd --json", `\n${TALENT_HELP}\nAdd --json`)
+    : HELP;
 
 const flag = (args: ReadonlyArray<string>, name: string) => {
   const index = args.indexOf(`--${name}`);
@@ -78,25 +108,26 @@ const folderArg = (args: ReadonlyArray<string>) => {
   return gitInfo(folder).root ?? folder;
 };
 
-const scriptPath = () => NodeFS.realpathSync(process.argv[1] ?? "lp");
-
 /**
- * The launcher hooks call: the installer's wrapper when present, else this script through node.
+ * The launcher hooks call: the installer's wrapper when present, else this lp itself (the
+ * standalone binary, or this script, which then needs node on the PATH).
  * On Windows, Claude Code runs hooks through Git Bash, so the path uses forward slashes and
  * points at the installer's sh wrapper (bin/lp); lp.cmd next to it serves PowerShell and cmd.
  */
 const lpCommandPath = () => {
   const wrapper = NodePath.join(helperHome(), "bin", "lp");
-  const path = NodeFS.existsSync(wrapper) ? wrapper : scriptPath();
+  const path = NodeFS.existsSync(wrapper) ? wrapper : selfPath();
   return process.platform === "win32" ? path.replaceAll("\\", "/") : path;
 };
 
-/** How Codex and Claude Code start `lp mcp`. Windows cannot spawn the sh wrapper, so node runs the script. */
+/** How Codex and Claude Code start `lp mcp`. Windows cannot spawn the sh wrapper, so it starts lp.exe. */
 const mcpLaunch = (source: SessionSource): McpLaunch => {
   const wrapper = NodePath.join(helperHome(), "bin", "lp");
-  return NodeFS.existsSync(wrapper) && process.platform !== "win32"
-    ? { command: wrapper, args: ["mcp", "--source", source] }
-    : { command: process.execPath, args: [scriptPath(), "mcp", "--source", source] };
+  if (NodeFS.existsSync(wrapper) && process.platform !== "win32") {
+    return { command: wrapper, args: ["mcp", "--source", source] };
+  }
+  const self = selfLaunch();
+  return { command: self.command, args: [...self.args, "mcp", "--source", source] };
 };
 
 /** Adds (or with `remove`, takes out) the logicpacks MCP server in Codex and Claude Code. */
@@ -131,7 +162,7 @@ const syncAgentsFile = async (folder: string, timeoutMs = 3000) => {
 const status = async () => {
   const config = loadConfig();
   say(
-    `Host:      ${config.server ?? "not connected (open the LogicPacks Mac app, then run lp login)"}`,
+    `Host:      ${config.server ?? "not connected (open the LogicPacks app, then run lp login)"}`,
   );
   if (config.server && config.token) {
     try {
@@ -213,13 +244,39 @@ const watch = async (args: ReadonlyArray<string>) => {
   }
 };
 
+/**
+ * `lp install --refresh`: after the helper itself was replaced (the installers run it), point the
+ * hooks, watcher and MCP entries that are already installed at this lp. Adds nothing new.
+ */
+const refreshSteps = (lines: Array<string>) => {
+  // Hooks call the bin/lp wrapper (or binary), whose path does not change: nothing to do.
+  if (watcherInstalled()) {
+    try {
+      lines.push(`Background watcher restarted: ${installWatcher(selfLaunch())}`);
+    } catch (error) {
+      lines.push((error as Error).message);
+    }
+  }
+  if (codexMcpInstalled()) {
+    const file = writeCodexMcp(mcpLaunch("codex"));
+    if (file) lines.push(`Codex MCP server updated in ${file}`);
+  }
+  if (claudeMcpInstalled() && !claudeMcpMatches(mcpLaunch("claude"))) {
+    const file = writeClaudeMcp(mcpLaunch("claude"));
+    if (file) lines.push(`Claude Code MCP server updated in ${file}`);
+  }
+  if (lines.length === 0)
+    lines.push("Nothing to refresh: no hooks, watcher or MCP server installed.");
+};
+
 const installSteps = (args: ReadonlyArray<string>, lines: Array<string>) => {
+  if (args.includes("--refresh")) return refreshSteps(lines);
   if (!args.includes("--no-hooks")) {
     lines.push(`Claude Code hooks added to ${writeClaudeHooks(lpCommandPath())}`);
   }
   if (!args.includes("--no-watcher")) {
     try {
-      lines.push(`Background watcher: ${installWatcher(scriptPath())}`);
+      lines.push(`Background watcher: ${installWatcher(selfLaunch())}`);
     } catch (error) {
       lines.push((error as Error).message);
     }
@@ -301,7 +358,7 @@ const main = async () => {
       }
       const config = loadConfig();
       if (!config.server || !config.token) {
-        say("Connect this computer first: open the LogicPacks Mac app, then run lp login.");
+        say("Connect this computer first: open the LogicPacks app, then run lp login.");
         process.exitCode = 1;
         return;
       }
@@ -408,9 +465,12 @@ const main = async () => {
       if (backups) say(backups);
       return;
     }
+    case "version":
+    case "--version":
+      return say(`lp ${helperVersion()}${isStandalone() ? "" : " (node script)"}`);
     case "help":
-      if (args[0] === "agents") return say(helpAgentsCommand().text);
-      return say(HELP);
+      if (args[0] === "agents") return say(helpAgentsCommand(await accountFeatures()).text);
+      return say(await helpText());
     case "mcp": {
       const cwd = NodePath.resolve(flag(args, "cwd") ?? process.cwd());
       const sourceArg = flag(args, "source");
@@ -457,7 +517,7 @@ const main = async () => {
         case "mine":
           return say(await jobsMine(config));
         default:
-          return say(HELP);
+          return say(await helpText());
       }
     }
     case "talent": {
@@ -484,7 +544,7 @@ const main = async () => {
       return appCommand(args);
     default: {
       const run = CONNECT_COMMANDS[command];
-      if (run === undefined) return say(HELP);
+      if (run === undefined) return say(await helpText());
       const ctx = defaultContext();
       const parsed = parseArgs([command, ...args]);
       try {

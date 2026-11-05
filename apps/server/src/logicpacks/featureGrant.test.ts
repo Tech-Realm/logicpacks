@@ -65,6 +65,8 @@ describe("feature grants", () => {
   it("treats cloud and the older cloud_agents key as one feature", () => {
     expect(expandFeatures(["cloud_agents"]).has("cloud")).toBe(true);
     expect(expandFeatures(["cloud"]).has("cloud_agents")).toBe(true);
-    expect(expandFeatures(["packs"]).has("cloud")).toBe(false);
+    expect(expandFeatures(["apps"]).has("cloud")).toBe(false);
+    // A removed feature id in an old code or grant is dropped without an error.
+    expect(Array.from(expandFeatures(["packs", "talent"] as never))).toEqual(["talent", "freelancer_jobs"]);
   });
 });

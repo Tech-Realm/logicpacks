@@ -8,6 +8,9 @@ import {
   ProviderInstanceId,
   type ServerSettingsError,
 } from "@logicpacks/contracts";
+import { refuseIfReadOnly } from "./readOnly.ts";
+import { hostAgents } from "./hostAgents.ts";
+import { refuseIfProjectsOff } from "./zoneHttp.ts";
 import { builtInRecipeCatalog } from "@logicpacks/shared/recipes/builtin";
 import * as ByteSize from "effect/ByteSize";
 import * as Config from "effect/Config";
@@ -24,6 +27,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../auth/SessionStore.ts";
 import { deriveAuthClientMetadata } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
+import { messageAuthorStore } from "./messageAuthors.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -80,7 +84,7 @@ const SyncImportRequest = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   shareWith: Schema.optionalKey(Schema.Array(Schema.String)),
 });
-const WorkspaceRole = Schema.Literals(["owner", "member"]);
+const WorkspaceRole = Schema.Literals(["owner", "member", "viewer"]);
 const WorkspaceRequest = Schema.Struct({ workspaceId: Schema.String });
 const CreateWorkspaceRequest = Schema.Struct({ name: Schema.String });
 const CurrentWorkspaceRequest = Schema.Struct({ workspaceId: Schema.NullOr(Schema.String) });
@@ -130,6 +134,7 @@ const accessErrorStatus: Record<LogicPacksAccessError["reason"], number> = {
   invalid_credentials: 401,
   unknown_user: 404,
   not_owner: 403,
+  read_only: 403,
   last_owner: 409,
   unknown_workspace: 404,
   invalid_workspace_name: 400,
@@ -535,8 +540,12 @@ const syncImportRoute = HttpRouter.add(
   Effect.gen(function* () {
     const caller = yield* resolveCaller;
     if (caller.kind === "anonymous") return json({ error: "unauthenticated" }, 401);
+    const readOnly = yield* refuseIfReadOnly(caller, null);
+    if (readOnly !== null) return readOnly;
     const locked = yield* cloudCreateGate;
     if (locked !== null) return locked;
+    const projectsOff = yield* refuseIfProjectsOff(caller);
+    if (projectsOff !== null) return projectsOff;
     const body = yield* readBody(SyncImportRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
     const result = yield* importSyncedProject({
@@ -623,6 +632,26 @@ const sessionRoute = HttpRouter.add(
       hostLabel: hostLabel.length > 0 ? hostLabel : null,
       workspaces: access.listWorkspaces(actor),
       currentWorkspaceId: access.currentWorkspaceId(actor),
+      /**
+       * A member's access zones per visible project (preset, values and where they came from).
+       * The app's composer and panels render from these; the server enforces them on every call.
+       */
+      access:
+        actor === null
+          ? {}
+          : Object.fromEntries(
+              Array.from(access.visibleProjectIds(actor)).map((projectId) => {
+                const resolved = access.zonesOf(actor, projectId);
+                return [
+                  projectId,
+                  { preset: resolved.preset, zones: resolved.zones, source: resolved.source },
+                ];
+              }),
+            ),
+      /** Projects zone: whether this person may create projects and workspaces on this host. */
+      canCreateProjects: actor === null ? true : access.canCreateProjects(actor),
+      /** The agents this host has installed: the ones its members can be lent. */
+      hostAgents: yield* hostAgents,
       claude,
       agentConnected,
       /** First-run answer to "How do you work?"; null until the member answers or skips. */
@@ -679,6 +708,8 @@ const createWorkspaceRoute = HttpRouter.add(
     if (caller.kind === "anonymous") return json({ error: "unauthenticated" }, 401);
     const locked = yield* cloudCreateGate;
     if (locked !== null) return locked;
+    const projectsOff = yield* refuseIfProjectsOff(caller, "workspace");
+    if (projectsOff !== null) return projectsOff;
     const body = yield* readBody(CreateWorkspaceRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
     const access = yield* LogicPacksAccess;
@@ -736,7 +767,9 @@ const workspaceMembersRoute = HttpRouter.add(
         ? "operator"
         : access.listWorkspaces(actor).find((workspace) => workspace.workspaceId === workspaceId)
             ?.role;
-    return json({ members, canManage: role === "operator" || role === "owner" });
+    const authorStore = messageAuthorStore((yield* ServerConfig.ServerConfig).stateDir);
+    const palette = (id: string) => authorStore.colorOf(id);
+    return json({ members: members.map((m) => ({ ...m, color: palette(m.user.userId) })), canManage: role === "operator" || role === "owner" });
   }).pipe(Effect.catchTags({ LogicPacksAccessError: accessErrorResponse })),
 );
 
@@ -905,8 +938,12 @@ const newProjectRoute = HttpRouter.add(
   Effect.gen(function* () {
     const caller = yield* resolveCaller;
     if (caller.kind === "anonymous") return json({ error: "unauthenticated" }, 401);
+    const readOnly = yield* refuseIfReadOnly(caller, null);
+    if (readOnly !== null) return readOnly;
     const locked = yield* cloudCreateGate;
     if (locked !== null) return locked;
+    const projectsOff = yield* refuseIfProjectsOff(caller);
+    if (projectsOff !== null) return projectsOff;
     const body = yield* readBody(NewProjectRequest);
     if (body === null) return json({ error: "bad_request" }, 400);
     const result = yield* createProject(body, actorOf(caller));

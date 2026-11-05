@@ -34,7 +34,6 @@ import { agentPresenceKey, describePresence } from "../../../logicpacks/presence
 import { PresenceService } from "../../../logicpacks/PresenceService.ts";
 import { ProjectLedger } from "../../../logicpacks/ProjectLedger.ts";
 import { runLedgerTool, type LedgerToolArgs } from "../../../logicpacks/ledgerHttp.ts";
-import { packsReader, type PacksReader } from "../../../logicpacks/packsHttp.ts";
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
@@ -87,7 +86,6 @@ const access = Effect.gen(function* () {
 const ledgerCall = Effect.fn("mcp.ledgerCall")(function* (
   tool: Parameters<typeof runLedgerTool>[0]["tool"],
   args: LedgerToolArgs,
-  readPacks?: PacksReader,
 ) {
   const context = yield* readCaller();
   if (context.caller === undefined)
@@ -104,7 +102,6 @@ const ledgerCall = Effect.fn("mcp.ledgerCall")(function* (
     name: own?.agent?.name ?? "An agent",
     tool,
     args,
-    ...(readPacks === undefined ? {} : { readPacks }),
   }).pipe(
     Effect.mapError(
       (error) =>
@@ -120,7 +117,6 @@ const ledgerCall = Effect.fn("mcp.ledgerCall")(function* (
 export const layer = McpToolAccess.toLayer(
   ProjectToolkit,
   Effect.gen(function* () {
-    const readPacks = yield* packsReader;
     return {
       lp_thread_launch: McpToolAccess.startsThreads(
         (input) => input,
@@ -390,9 +386,6 @@ export const layer = McpToolAccess.toLayer(
           ...(input.goal === undefined ? {} : { goal: input.goal }),
           ...(input.decision === undefined ? {} : { decision: input.decision }),
         }),
-      ),
-      lp_project_packs: McpToolAccess.readsAsCaller((input) =>
-        ledgerCall("packs", input.query === undefined ? {} : { query: input.query }, readPacks),
       ),
       lp_project_goals: McpToolAccess.readsAsCaller((input) =>
         ledgerCall("goals", input.goalId === undefined ? {} : { goalId: input.goalId }),

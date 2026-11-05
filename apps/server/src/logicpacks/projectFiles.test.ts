@@ -12,6 +12,7 @@ import {
   cleanRelativePath,
   DEFAULT_UPLOAD_MAX_BYTES,
   githubRepoOf,
+  originRemote,
   listProjectFiles,
   ProjectFileError,
   publicCloneUrl,
@@ -206,5 +207,22 @@ describe("clone urls", () => {
       "https://git.example.com/a/b.git",
     );
     expect(publicCloneUrl(null)).toBeNull();
+  });
+
+  it("reads a plain git origin so lp clone works for a project shared with lp share", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "lp-origin-"));
+    try {
+      expect(originRemote(root)).toBeNull();
+      NodeChildProcess.spawnSync("git", ["init", "-q"], { cwd: root });
+      expect(originRemote(root)).toBeNull();
+      NodeChildProcess.spawnSync(
+        "git",
+        ["remote", "add", "origin", "https://x-access-token:abc@github.com/Majboor/site.git"],
+        { cwd: root },
+      );
+      expect(publicCloneUrl(originRemote(root))).toBe("https://github.com/Majboor/site.git");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

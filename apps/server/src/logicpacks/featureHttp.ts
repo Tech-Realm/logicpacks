@@ -51,7 +51,7 @@ export const featureSubject = Effect.gen(function* () {
 
 export const lockedMessage = (feature: GatedFeature) =>
   feature === "cloud" || feature === "cloud_agents"
-    ? "Cloud workspaces are coming soon. Use LogicPacks for Mac to work with your team now."
+    ? "Cloud workspaces are coming soon. Use the LogicPacks app for Mac or Windows to work with your team now."
     : `${FEATURE_LABEL[feature]} is not unlocked for your account. Redeem an access code to use it.`;
 
 /** The header a laptop host sends its grant in when it talks to the cloud (cloud sync). */

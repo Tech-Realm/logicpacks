@@ -270,6 +270,8 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { makeMemberFence } from "./logicpacks/memberFence.ts";
+import { memberUserIdFromSubject } from "./logicpacks/projectAccess.ts";
+import { awaitMemberSocketClose } from "./logicpacks/memberSockets.ts";
 import { makePresenceConnection } from "./logicpacks/presenceConnection.ts";
 import { PresenceService } from "./logicpacks/PresenceService.ts";
 import * as LogicPacksUsageService from "./logicpacks/LogicPacksUsage.ts";
@@ -1766,9 +1768,14 @@ export const layerWsRpc = (
             ? withoutWorkspaceSnapshots(commandProviders)
             : commandProviders,
         );
-        const settings = ServerSettings.redactServerSettingsForClient(
+        const redactedSettings = ServerSettings.redactServerSettingsForClient(
           yield* serverSettings.getSettings,
         );
+        // A member's default model is the host's Claude when their AI zone lends it.
+        const settings =
+          memberFence === null
+            ? redactedSettings
+            : memberFence.withMemberDefaults(redactedSettings, providers);
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
@@ -3121,7 +3128,11 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
           Stream.callback<TerminalMetadataStreamEvent>((queue) =>
             Effect.acquireRelease(
-              terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
+              terminalManager.subscribeMetadata((event) => {
+                // A member sees only the terminals they opened.
+                const visible = memberFence === null ? event : memberFence.filterTerminalEvent(event);
+                return visible === null ? Effect.void : Queue.offer(queue, visible);
+              }),
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
@@ -3267,7 +3278,16 @@ export const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
-                Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
+                Stream.mapEffect((settings) =>
+                  Effect.map(providerRegistry.getProviders, (providers) =>
+                    memberFence === null
+                      ? ServerSettings.redactServerSettingsForClient(settings)
+                      : memberFence.withMemberDefaults(
+                          ServerSettings.redactServerSettingsForClient(settings),
+                          visibleProviders(providers),
+                        ),
+                  ),
+                ),
                 Stream.map((settings) => ({
                   version: 1 as const,
                   type: "settingsUpdated" as const,
@@ -3518,12 +3538,18 @@ export const layer = Layer.unwrap(
           () =>
             Effect.raceFirst(
               rpcWebSocketHttpEffect,
-              sessions.awaitInvalidation(session.sessionId).pipe(
-                Effect.as(HttpServerResponse.empty()),
-                Effect.catchTags({
-                  SessionCredentialVerificationError: (error) =>
-                    failEnvironmentInternal("internal_error", error),
-                }),
+              Effect.raceFirst(
+                sessions.awaitInvalidation(session.sessionId).pipe(
+                  Effect.as(HttpServerResponse.empty()),
+                  Effect.catchTags({
+                    SessionCredentialVerificationError: (error) =>
+                      failEnvironmentInternal("internal_error", error),
+                  }),
+                ),
+                // LogicPacks: removing this member closes their open sockets at once.
+                awaitMemberSocketClose(memberUserIdFromSubject(session.subject)).pipe(
+                  Effect.as(HttpServerResponse.empty()),
+                ),
               ),
             ),
           () =>

@@ -1,84 +1,118 @@
 # LogicPacks helper installer for Windows: irm https://logicpacks.io/helper.ps1 | iex
+# Installs lp.exe, one standalone executable (no Node, npm or anything else needed), in
+# %USERPROFILE%\.logicpacks\helper\bin and adds that folder to the user PATH. No admin rights.
+# It checks the SHA-256 against https://downloads.logicpacks.io/helper/latest.json; re-running it
+# upgrades lp in place. Works in Windows PowerShell 5.1 and PowerShell 7.
 # Optional: $env:LP_SERVER (and $env:LP_TOKEN) to sign in during install, $env:LP_HELPER_URL to
-# install from another copy, $env:LP_HELPER_SHA256 to pin it, $env:LP_HELPER_NO_WATCHER = 1 /
+# install from another copy ($env:LP_HELPER_SHA256 to pin it), $env:LP_HELPER_NO_WATCHER = 1 /
 # $env:LP_HELPER_NO_HOOKS = 1 to skip parts of `lp install`, which runs only with $env:LP_HELPER_INSTALL = 1.
 # By default this only puts the lp command in place: it changes no agent's settings.
 # Runs inside the caller's PowerShell (iex), so it throws instead of calling exit.
+& {
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 function Fail($message) { throw "LogicPacks helper: $message" }
 
+if (-not [Environment]::Is64BitOperatingSystem) { Fail 'lp needs 64-bit Windows.' }
 $HelperHome = if ($env:LP_HELPER_HOME) { $env:LP_HELPER_HOME } else { Join-Path $env:USERPROFILE '.logicpacks\helper' }
-$Source = if ($env:LP_HELPER_URL) { $env:LP_HELPER_URL } else { 'https://logicpacks.io/helper/lp.mjs' }
+$Base = if ($env:LOGICPACKS_DOWNLOADS) { $env:LOGICPACKS_DOWNLOADS } else { 'https://downloads.logicpacks.io' }
 $BinDir = Join-Path $HelperHome 'bin'
+$Target = Join-Path $BinDir 'lp.exe'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$NodeCommand = Get-Command node -ErrorAction SilentlyContinue
-if (-not $NodeCommand) {
-  Fail 'Node.js 18 or newer is needed. Install the LTS from https://nodejs.org (or: winget install OpenJS.NodeJS.LTS), open a new PowerShell and run this again.'
+if ($env:LP_HELPER_URL) {
+  $Source = $env:LP_HELPER_URL
+  $Expected = $env:LP_HELPER_SHA256
+} else {
+  $Manifest = Invoke-RestMethod -UseBasicParsing -Uri "$Base/helper/latest.json"
+  $Build = $Manifest.files.'windows-x64'
+  if (-not $Build -or -not $Build.url -or -not $Build.sha256) { Fail 'the release manifest has no windows-x64 build.' }
+  $Source = $Build.url
+  $Expected = $Build.sha256
 }
-$Node = $NodeCommand.Source
-# No double quotes in native arguments: Windows PowerShell 5.1 strips them.
-$NodeMajor = [int](& $Node -p 'parseInt(process.versions.node)')
-if ($NodeMajor -lt 18) { Fail "Node.js 18 or newer is needed; found $(& $Node -v)." }
 
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-$Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("lp-helper-" + [guid]::NewGuid().ToString('N') + '.mjs')
+$Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('lp-' + [guid]::NewGuid().ToString('N') + '.exe')
 try {
   if ($Source -match '^https?://') {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $Tmp
+    # curl.exe (built into Windows 10 1803 and later) is much faster than Invoke-WebRequest in
+    # Windows PowerShell 5.1 and shows progress; its progress on stderr is not a PowerShell error.
+    $Curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($Curl) {
+      $ErrorActionPreference = 'Continue'
+      & $Curl.Source -fL --retry 3 --progress-bar -o $Tmp $Source
+      $ErrorActionPreference = 'Stop'
+      if ($LASTEXITCODE -ne 0) { Fail "could not download $Source (curl exit code $LASTEXITCODE)." }
+    } else {
+      Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $Tmp
+    }
   } else {
     Copy-Item -LiteralPath ($Source -replace '^file:///?', '') -Destination $Tmp
   }
-  if ($env:LP_HELPER_SHA256) {
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Tmp).Hash.ToLower()
-    if ($actual -ne $env:LP_HELPER_SHA256.ToLower()) { Fail "checksum mismatch for $Source" }
+  if ($Expected) {
+    $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Tmp).Hash.ToLower()
+    if ($Actual -ne $Expected.ToLower()) { Fail "checksum mismatch for $Source (expected $Expected, got $Actual). Nothing was installed." }
   }
-  & $Node --check $Tmp 2>$null
-  if ($LASTEXITCODE -ne 0) { Fail "$Source is not a valid helper script" }
-  Move-Item -Force -LiteralPath $Tmp -Destination (Join-Path $HelperHome 'lp.mjs')
+  if (-not ((& $Tmp help 2>$null) -match 'LogicPacks')) { Fail "$Source is not a working lp.exe for this computer." }
+
+  New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+  # A running watcher holds lp.exe open: stop it (the refresh below starts it again).
+  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { ($_.Name -eq 'lp.exe' -and $_.CommandLine -like '* watch*') -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*lp.mjs*watch*') } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $Target) {
+    # Another lp.exe (an MCP server, say) may still run: Windows lets a running exe be renamed.
+    try { Remove-Item -Force -LiteralPath $Target } catch {
+      Rename-Item -Force -LiteralPath $Target -NewName ('lp.exe.old-' + [guid]::NewGuid().ToString('N'))
+    }
+  }
+  Move-Item -Force -LiteralPath $Tmp -Destination $Target
 } finally {
   if (Test-Path -LiteralPath $Tmp) { Remove-Item -Force -LiteralPath $Tmp }
 }
+Get-ChildItem -LiteralPath $BinDir -Filter 'lp.exe.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
-$Script = Join-Path $HelperHome 'lp.mjs'
-# lp.cmd for PowerShell and cmd; an sh wrapper named lp for Git Bash, which Claude Code uses for
-# its shell and hooks on Windows. Both quote their paths, so spaces in the profile path work.
+# lp.cmd for cmd; an sh wrapper named lp for Git Bash, which Claude Code uses for its shell and
+# hooks on Windows. Both start lp.exe and quote its path, so spaces in the profile path work.
 $Ascii = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText((Join-Path $BinDir 'lp.cmd'), "@echo off`r`n`"$Node`" `"$Script`" %*`r`n", $Ascii)
-$PosixNode = $Node -replace '\\', '/'
-$PosixScript = $Script -replace '\\', '/'
-[System.IO.File]::WriteAllText((Join-Path $BinDir 'lp'), "#!/bin/sh`nexec `"$PosixNode`" `"$PosixScript`" `"`$@`"`n", $Ascii)
+[System.IO.File]::WriteAllText((Join-Path $BinDir 'lp.cmd'), "@echo off`r`n`"%~dp0lp.exe`" %*`r`n", $Ascii)
+$PosixTarget = $Target -replace '\\', '/'
+[System.IO.File]::WriteAllText((Join-Path $BinDir 'lp'), "#!/bin/sh`nexec `"$PosixTarget`" `"`$@`"`n", $Ascii)
 
 # Put the bin folder on the user's PATH (new shells) and this session's PATH.
 $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not (($UserPath -split ';') -contains $BinDir)) {
-  $NewPath = if ([string]::IsNullOrEmpty($UserPath)) { $BinDir } else { "$UserPath;$BinDir" }
+  $NewPath = if ([string]::IsNullOrEmpty($UserPath)) { $BinDir } else { "$($UserPath.TrimEnd(';'));$BinDir" }
   [Environment]::SetEnvironmentVariable('Path', $NewPath, 'User')
 }
 if (-not (($env:Path -split ';') -contains $BinDir)) { $env:Path = "$env:Path;$BinDir" }
 
-$Lp = Join-Path $BinDir 'lp.cmd'
+# Point a watcher or MCP server that an older lp installed at this one (adds nothing new).
+& $Target install --refresh --yes | Out-Null
+# The older helper was a Node script.
+$OldScript = Join-Path $HelperHome 'lp.mjs'
+if (Test-Path -LiteralPath $OldScript) { Remove-Item -Force -LiteralPath $OldScript -ErrorAction SilentlyContinue }
+
 if ($env:LP_HELPER_INSTALL) {
   $InstallArgs = @('install', '--yes')
   if ($env:LP_HELPER_NO_HOOKS) { $InstallArgs += '--no-hooks' }
   if ($env:LP_HELPER_NO_WATCHER) { $InstallArgs += '--no-watcher' }
-  & $Lp @InstallArgs
+  & $Target @InstallArgs
 }
-Write-Host "Installed $Lp (the lp command) in $HelperHome. No agent settings were changed (the bin folder was added to your user PATH)."
+if (-not ((& lp.exe help) -match 'LogicPacks')) { Fail 'lp.exe on the PATH did not start after installing.' }
+Write-Host "Installed $Target ($(& $Target version)). No agent settings were changed (the bin folder was added to your user PATH)."
 
 if ($env:LP_SERVER) {
   $LoginArgs = @('login', '--host', $env:LP_SERVER)
   if ($env:LP_TOKEN) { $LoginArgs += @('--token', $env:LP_TOKEN) }
-  & $Lp @LoginArgs
+  & $Target @LoginArgs
 } else {
   Write-Host ''
-  Write-Host 'Next: lp.cmd login'
+  Write-Host 'Next: lp.exe login'
 }
-# Windows PowerShell 5.1 has a built-in alias lp (Out-Printer) that wins over lp.cmd: drop it in
-# this session; in new PowerShell windows type lp.cmd (cmd, Git Bash and PowerShell 7 take lp).
-if (Test-Path Alias:lp) {
-  Remove-Item Alias:lp -Force -ErrorAction SilentlyContinue
-  Write-Host 'In Windows PowerShell, type lp.cmd: lp is a built-in alias for Out-Printer there.'
+if ($PSVersionTable.PSVersion.Major -lt 6) { Write-Host 'In Windows PowerShell, type lp.exe: lp is a built-in alias for Out-Printer there.' }
+Write-Host "LogicPacks helper installed. Run lp.exe status to check it."
 }
-Write-Host "LogicPacks helper installed in $HelperHome. Run lp.cmd status to check it."
+# Windows PowerShell 5.1 has a built-in alias lp (Out-Printer) that wins over lp.exe. iex runs this
+# line in your session, so plain lp works here; in new Windows PowerShell windows type lp.exe.
+if (Test-Path Alias:lp) { Remove-Item Alias:lp -Force -ErrorAction SilentlyContinue }

@@ -198,9 +198,7 @@ export type LpSetUsageSharingInput = typeof LpSetUsageSharingInput.Type;
  * Events the server cannot see itself, reported by the caller for themselves:
  * the helper linking an outside agent session, an agent resolving a sync
  * conflict. `subject` deduplicates (a commit, a session id), so reporting
- * twice counts once. Pack publish and reuse are recorded by the server only,
- * when a pack is actually published or reused, so nobody can award them to
- * themselves; the activity endpoints reject those kinds.
+ * twice counts once.
  */
 export const LpReportableActivityKind = Schema.Literals([
   "conflict.resolved",

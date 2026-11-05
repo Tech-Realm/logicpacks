@@ -39,14 +39,16 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     return Math.max(minWidth, Math.min(maxWidth, value));
   };
 
-  const readWidth = () => {
-    if (typeof window === "undefined") return defaultWidth;
+  // Null until the person drags: the width then follows the default, which may be derived
+  // from a measurement (a share of the row) that only exists after mount.
+  const readWidth = (): number | null => {
+    if (typeof window === "undefined") return null;
     try {
       const stored = getLocalStorageItem(storageKey, WidthSchema);
-      return clamp(stored ?? defaultWidth);
+      return stored === null || stored === undefined ? null : clamp(stored);
     } catch (error) {
       console.error("Could not read persisted panel width.", error);
-      return defaultWidth;
+      return null;
     }
   };
   const [widthState, setWidthState] = useState(() => ({ storageKey, width: readWidth() }));
@@ -54,7 +56,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
     setWidthState({ storageKey, width: readWidth() });
   }
 
-  const clampedWidth = clamp(widthState.width);
+  const clampedWidth = clamp(widthState.width ?? defaultWidth);
 
   const commitWidth = (nextStorageKey: string, nextWidth: number) => {
     // Resizing remains usable for this session when browser storage is unavailable.

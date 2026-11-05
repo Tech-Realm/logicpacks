@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { LogicPacksAccess, layer } from "./LogicPacksAccess.ts";
@@ -253,6 +254,83 @@ it.layer(layerAccess)("LogicPacksAccess", (it) => {
         restarted.listWorkspaces(dev.userId).map((workspace) => workspace.name),
         ["Dev's workspace", "Side gig"],
       );
+    }),
+  );
+
+  it.effect("a Read only seat is a viewer in every project of the workspace, and goes back", () =>
+    Effect.gen(function* () {
+      const access = yield* LogicPacksAccess;
+      const sql = yield* SqlClient.SqlClient;
+      const boss = yield* access.quickLogin("ro-boss");
+      const bo = yield* access.quickLogin("ro-bo");
+      const workspaceId = access.currentWorkspaceId(boss.userId)!;
+      yield* access.recordOwner("p-ro", boss.userId);
+      yield* access.attachProject("p-ro", workspaceId);
+      yield* access.addWorkspaceMember({ actorUserId: boss.userId, workspaceId, user: "ro-bo" });
+      assert.strictEqual(access.roleOf(bo.userId, "p-ro"), "member");
+      assert.isFalse(access.isReadOnly(bo.userId, "p-ro"));
+
+      yield* access.setWorkspaceRole({
+        actorUserId: boss.userId,
+        workspaceId,
+        userId: bo.userId,
+        role: "viewer",
+      });
+      assert.strictEqual(access.roleOf(bo.userId, "p-ro"), "viewer");
+      assert.isTrue(access.isReadOnly(bo.userId, "p-ro"));
+      assert.isFalse(access.isReadOnly(boss.userId, "p-ro"));
+      // No project named: the caller's current workspace decides.
+      yield* access.setCurrentWorkspace({ actorUserId: bo.userId, workspaceId });
+      assert.isTrue(access.isReadOnly(bo.userId, null));
+      assert.strictEqual(
+        access.listWorkspaces(bo.userId).find((w) => w.workspaceId === workspaceId)?.role,
+        "viewer",
+      );
+      // The CHECKed role column keeps 'member'; the seat lives in its own table.
+      const stored = yield* sql<{ readonly role: string }>`
+        SELECT role FROM logicpacks_workspace_members
+        WHERE workspace_id = ${workspaceId} AND user_id = ${bo.userId}
+      `;
+      assert.strictEqual(stored[0]?.role, "member");
+      const seats = yield* sql<{ readonly user_id: string }>`
+        SELECT user_id FROM logicpacks_workspace_readonly WHERE workspace_id = ${workspaceId}
+      `;
+      assert.deepStrictEqual(
+        seats.map((row) => row.user_id),
+        [bo.userId],
+      );
+
+      // A share link member role does not lift a read only seat.
+      yield* access.addMember({ projectId: "p-ro", actorUserId: boss.userId, user: "ro-bo" });
+      assert.strictEqual(access.roleOf(bo.userId, "p-ro"), "viewer");
+
+      // A viewer cannot hand out the invite link or change roles.
+      const invite = yield* access
+        .inviteToken({ actorUserId: bo.userId, workspaceId })
+        .pipe(Effect.flip);
+      assert.strictEqual(invite.reason, "read_only");
+      const promote = yield* access
+        .setWorkspaceRole({
+          actorUserId: bo.userId,
+          workspaceId,
+          userId: bo.userId,
+          role: "owner",
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(promote.reason, "not_owner");
+
+      yield* access.setWorkspaceRole({
+        actorUserId: boss.userId,
+        workspaceId,
+        userId: bo.userId,
+        role: "member",
+      });
+      assert.isFalse(access.isReadOnly(bo.userId, "p-ro"));
+      assert.strictEqual(access.roleOf(bo.userId, "p-ro"), "member");
+      const left = yield* sql<{ readonly user_id: string }>`
+        SELECT user_id FROM logicpacks_workspace_readonly WHERE workspace_id = ${workspaceId}
+      `;
+      assert.strictEqual(left.length, 0);
     }),
   );
 });

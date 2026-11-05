@@ -14,6 +14,7 @@ import { isElectron } from "../env";
 import { readPrimaryEnvironmentId, usePrimaryEnvironmentId } from "../state/environments";
 import { lpApi, type LpSession, type LpWorkspace } from "./api";
 import type { UploadItem } from "./projectFiles.logic";
+import { isReadOnlyIn } from "./readOnly.logic";
 
 type SessionStatus = "idle" | "loading" | "ready" | "unavailable";
 
@@ -76,8 +77,21 @@ export function useLogicPacksSession(enabled = true) {
   useEffect(() => {
     if (enabled && state.status === "idle") void refreshLogicPacksSession();
   }, [enabled, state.status]);
+  // A member's access zones can change at any moment (the host turns the terminal off, lends the
+  // agent): the session is the client's copy, so a member's app re-reads it while it is open.
+  const isMember = state.session?.user != null;
+  // oxlint-disable-next-line logicpacks/no-unreasoned-state-sync -- keeps a member's access zones current while the app is open
+  useEffect(() => {
+    if (!enabled || !isMember) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshLogicPacksSession();
+    }, ACCESS_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [enabled, isMember]);
   return state;
 }
+
+const ACCESS_POLL_MS = 3000;
 
 export function currentWorkspace(session: LpSession | null): LpWorkspace | null {
   if (session === null || session.currentWorkspaceId === null) return null;
@@ -184,12 +198,25 @@ export function lpHostLabelFor(session: LpSession | null): string | null {
   if (!isMemberSession(session) && session.cloudHost !== true) return null;
   if (session.hostLabel) return session.hostLabel;
   const workspace = currentWorkspace(session);
+  // A laptop host is someone's computer, not a cloud: say so (and still never its real name).
+  if (session.localAgents === true && session.cloudHost !== true) {
+    return workspace ? `${workspace.name} host computer` : "Host computer";
+  }
   return workspace ? `${workspace.name} cloud` : "LogicPacks cloud";
 }
 
 export function useLpHostLabel(): string | null {
   return lpHostLabelFor(useLogicPacksStore((store) => store.session));
 }
+
+/** Read only access where this project (or, with none, the current workspace) lives. */
+export function useLpReadOnly(projectId: string | null): boolean {
+  return useLogicPacksStore((store) => isReadOnlyIn(store.session, projectId));
+}
+
+/** For event handlers outside React render. */
+export const readLpReadOnly = (projectId: string | null): boolean =>
+  isReadOnlyIn(useLogicPacksStore.getState().session, projectId);
 
 /** The signed-in viewer is a LogicPacks member (not the host's own operator). */
 export function useLpIsMember(): boolean {

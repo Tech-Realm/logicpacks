@@ -25,6 +25,9 @@ describe("lpHostLabelFor", () => {
     expect(lpHostLabelFor(member)).toBe("Acme cloud");
     expect(lpHostLabelFor({ ...base, cloudHost: true })).toBe("Acme cloud");
   });
+  it("calls a laptop host a host computer, not a cloud", () => {
+    expect(lpHostLabelFor({ ...member, localAgents: true })).toBe("Acme host computer");
+  });
   it("prefers LOGICPACKS_HOST_LABEL", () => {
     expect(lpHostLabelFor({ ...member, hostLabel: "Studio box" })).toBe("Studio box");
   });

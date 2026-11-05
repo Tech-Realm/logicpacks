@@ -65,6 +65,14 @@ import {
   type Transition,
 } from "./negotiation.ts";
 import { hostDisplayName } from "./presenceConnection.ts";
+import {
+  readPreserved,
+  readProjectFile,
+  savePreserved,
+  unionMerge,
+  writeProjectFile,
+  type PreservedVersion,
+} from "./preservedVersions.ts";
 import { PresenceService } from "./PresenceService.ts";
 import { sharedAppContextFor } from "./sharedAppContext.ts";
 import { ProjectLedgerTurnContext } from "./turnContext.ts";
@@ -409,6 +417,21 @@ export class ProjectLedger extends Context.Service<
       readonly title?: string | undefined;
     }) => Effect.Effect<{ readonly threadId: string }, LedgerError>;
     readonly refreshProject: (projectId: string) => Effect.Effect<void>;
+    /** Puts one party's saved version of a conflicted file back; the other versions stay saved. */
+    readonly restoreVersion: (input: {
+      readonly projectId: string;
+      readonly conflictId: string;
+      readonly versionThreadId: string;
+      readonly by: string;
+    }) => Effect.Effect<{ readonly path: string }, LedgerError>;
+    /** Writes every saved version of a conflicted file into it and resolves the conflict. */
+    readonly keepBoth: (input: {
+      readonly projectId: string;
+      readonly conflictId: string;
+      readonly by: string;
+    }) => Effect.Effect<{ readonly files: ReadonlyArray<string> }, LedgerError>;
+    /** Who may restore a thread's saved version: its people, besides the project owner. */
+    readonly threadPeople: (threadId: string) => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("logicpacks/logicpacks/ProjectLedger") {}
 
@@ -711,6 +734,27 @@ const make = Effect.gen(function* () {
 
   // ── Conflicts ──
 
+  /** Where a thread's agent works: its worktree, else the project's own checkout. */
+  const projectRootOf = Effect.fn("ProjectLedger.projectRootOf")(function* (projectId: string) {
+    const [project] = yield* projects
+      .listShells({ projectIds: [projectId as ProjectId] })
+      .pipe(Effect.orElseSucceed(() => []));
+    return project?.workspaceRoot ?? null;
+  });
+  const threadRootOf = Effect.fn("ProjectLedger.threadRootOf")(function* (
+    threadId: string,
+    projectId: string,
+  ) {
+    const shell = yield* threadsService
+      .getThreadShell(threadId as ThreadId)
+      .pipe(Effect.orElseSucceed(() => null));
+    return shell?.worktreePath ?? (yield* projectRootOf(projectId));
+  });
+
+  /** What each agent last wrote, per file: the copy that survives the next writer replacing it. */
+  const lastWritten = new Map<string, { readonly content: Buffer; readonly atMs: number }>();
+  const writtenKey = (threadId: string, path: string) => `${threadId}\0${path}`;
+
   const openConflict = Effect.fn("ProjectLedger.openConflict")(function* (input: {
     readonly projectId: string;
     readonly source: LedgerConflict["source"];
@@ -718,10 +762,33 @@ const make = Effect.gen(function* () {
     readonly parties: ReadonlyArray<LedgerThread>;
     readonly people: ReadonlyArray<string>;
     readonly reason: string;
+    /** Overlap: the file's path, so every party's last written version is saved. */
+    readonly preservePath?: string | undefined;
   }) {
     const nowMs = yield* now;
+    const id = newId("c");
+    const saved: PreservedVersion[] = [];
+    if (input.preservePath !== undefined) {
+      const root = yield* projectRootOf(input.projectId);
+      for (const party of input.parties) {
+        const written = lastWritten.get(writtenKey(party.threadId, input.preservePath));
+        if (root === null || written === undefined) continue;
+        const version = savePreserved({
+          root,
+          conflictId: id,
+          threadId: party.threadId,
+          name: party.members[0]?.name ?? "Someone",
+          path: input.preservePath,
+          content: written.content,
+          // When it was written, so Merge both keeps the earlier writer's lines first.
+          nowMs: written.atMs,
+        });
+        if (version !== null) saved.push(version);
+      }
+    }
+    const localMerge = saved.length >= 2 && (sync.status([input.projectId])[0]?.remoteUrl ?? null) === null;
     const conflict: LedgerConflict = {
-      id: newId("c"),
+      id,
       projectId: input.projectId,
       source: input.source,
       files: input.files,
@@ -735,10 +802,12 @@ const make = Effect.gen(function* () {
       negotiationId: null,
       createdAtMs: nowMs,
       resolvedAtMs: null,
+      ...(saved.length === 0 ? {} : { preserved: saved, localMerge }),
     };
     yield* store.putConflict(conflict);
-    const offer =
-      input.parties.length >= 2
+    const offer = localMerge
+      ? ` Each person's version is saved: restore one, or press Merge both to keep both in the file.`
+      : input.parties.length >= 2
         ? ` Your agent can branch and merge ${input.parties.length > 2 ? `all ${input.parties.length} people's` : "both people's"} work: press Merge both, or ask it.`
         : " Your agent can merge it on a branch: press Merge both, or ask it.";
     yield* notice(
@@ -842,7 +911,47 @@ const make = Effect.gen(function* () {
         new Set(involved.map((candidate) => candidate.members[0]?.name ?? "Someone")),
       ),
       reason: `${names.join(" and ")} are editing it at the same time.`,
+      preservePath: path,
     });
+  });
+
+  /**
+   * An agent just wrote `path`: keep that copy. When the file is already in an open conflict, the
+   * writer's saved version moves to what it wrote now, so a later writer never replaces it unseen.
+   */
+  const rememberWrite = Effect.fn("ProjectLedger.rememberWrite")(function* (
+    thread: LedgerThread,
+    path: string,
+    nowMs: number,
+  ) {
+    const root = yield* threadRootOf(thread.threadId, thread.projectId);
+    const content = root === null ? null : readProjectFile(root, path);
+    if (content === null) return;
+    lastWritten.set(writtenKey(thread.threadId, path), { content, atMs: nowMs });
+    const storeRoot = yield* projectRootOf(thread.projectId);
+    if (storeRoot === null) return;
+    for (const conflict of store.conflicts(thread.projectId)) {
+      if (conflict.state === "resolved" || conflict.preserved === undefined) continue;
+      if (!conflict.files.includes(path)) continue;
+      const mine = conflict.preserved.find(
+        (version) => version.threadId === thread.threadId && version.path === path,
+      );
+      if (mine === undefined) continue;
+      const version = savePreserved({
+        root: storeRoot,
+        conflictId: conflict.id,
+        threadId: thread.threadId,
+        name: mine.name,
+        path,
+        content,
+        nowMs,
+      });
+      if (version === null) continue;
+      yield* store.putConflict({
+        ...conflict,
+        preserved: conflict.preserved.map((existing) => (existing === mine ? version : existing)),
+      });
+    }
   });
 
   const onPresence = Effect.fn("ProjectLedger.onPresence")(function* (entry: PresenceEntry) {
@@ -866,6 +975,7 @@ const make = Effect.gen(function* () {
       head === undefined || head.path !== files[0]?.path || head.activity !== files[0]?.activity;
     yield* store.putThread({ ...thread, files, lastActiveAtMs: nowMs }, persist);
     if (entry.actor.kind === "agent" && entry.location.activity === "editing") {
+      yield* rememberWrite(thread, path, nowMs);
       yield* checkOverlap(store.thread(entry.threadId)!, path, nowMs);
     }
   });
@@ -1257,7 +1367,142 @@ const make = Effect.gen(function* () {
     return { threadId: targetThreadId as string };
   });
 
+  /** Roots of every checkout that holds the conflicted file: each party's, plus the project's. */
+  const checkoutsOf = Effect.fn("ProjectLedger.checkoutsOf")(function* (conflict: LedgerConflict) {
+    const roots = new Set<string>();
+    for (const party of conflict.parties) {
+      const root = yield* threadRootOf(party.threadId, conflict.projectId);
+      if (root !== null) roots.add(root);
+    }
+    const project = yield* projectRootOf(conflict.projectId);
+    if (project !== null) roots.add(project);
+    return [...roots];
+  });
+
+  const openConflictOf = (projectId: string, conflictId: string) => {
+    const conflict = store.conflict(conflictId);
+    return conflict === undefined || conflict.projectId !== projectId
+      ? fail("not_found", "No such conflict in this project.")
+      : Effect.succeed(conflict);
+  };
+
+  const restoreVersion = Effect.fn("ProjectLedger.restoreVersion")(function* (input: {
+    readonly projectId: string;
+    readonly conflictId: string;
+    readonly versionThreadId: string;
+    readonly by: string;
+  }) {
+    const conflict = yield* openConflictOf(input.projectId, input.conflictId);
+    const version = conflict.preserved?.find((entry) => entry.threadId === input.versionThreadId);
+    const storeRoot = yield* projectRootOf(input.projectId);
+    const content =
+      version === undefined || storeRoot === null
+        ? null
+        : readPreserved(storeRoot, conflict.id, version);
+    if (version === undefined || storeRoot === null || content === null) {
+      return yield* fail("not_found", "That saved version is no longer there.");
+    }
+    const nowMs = yield* now;
+    const checkouts = yield* checkoutsOf(conflict);
+    for (const root of checkouts) {
+      // What is there now stays recoverable too: it may be the other person's newer work.
+      const current = readProjectFile(root, version.path);
+      if (current !== null && !current.equals(content)) {
+        savePreserved({
+          root: storeRoot,
+          conflictId: conflict.id,
+          threadId: `replaced-${nowMs}`,
+          name: "Replaced",
+          path: version.path,
+          content: current,
+          nowMs,
+        });
+      }
+      writeProjectFile(root, version.path, content);
+    }
+    lastWritten.set(writtenKey(version.threadId, version.path), { content, atMs: nowMs });
+    yield* notice(
+      input.projectId,
+      conflict.parties.map((party) => party.threadId),
+      `${input.by} restored ${version.name}'s version of ${version.path}. The other saved versions are kept; Merge both still keeps them all.`,
+    );
+    return { path: version.path };
+  });
+
+  const keepBoth = Effect.fn("ProjectLedger.keepBoth")(function* (input: {
+    readonly projectId: string;
+    readonly conflictId: string;
+    readonly by: string;
+  }) {
+    const conflict = yield* openConflictOf(input.projectId, input.conflictId);
+    const storeRoot = yield* projectRootOf(input.projectId);
+    const versions = conflict.preserved ?? [];
+    if (conflict.state === "resolved" || storeRoot === null || versions.length === 0) {
+      return yield* fail("invalid", "There are no saved versions to merge.");
+    }
+    if (conflict.negotiationId !== null) {
+      return yield* fail("invalid", "The agents are already negotiating this one.");
+    }
+    const nowMs = yield* now;
+    const checkouts = yield* checkoutsOf(conflict);
+    const merged: string[] = [];
+    for (const path of new Set(versions.map((version) => version.path))) {
+      const mine = versions.filter((version) => version.path === path);
+      if (mine.some((version) => !version.text)) {
+        return yield* fail("invalid", `${path} is not a text file: restore one version instead.`);
+      }
+      const texts = [...mine]
+        .sort((a, b) => a.savedAtMs - b.savedAtMs)
+        .map((version) => readPreserved(storeRoot, conflict.id, version)?.toString("utf8"))
+        .filter((text): text is string => text !== undefined);
+      const current = readProjectFile(storeRoot, path);
+      // Whatever is on disk now (a later edit) is kept too.
+      const body = Buffer.from(
+        unionMerge([...texts, ...(current === null ? [] : [current.toString("utf8")])]),
+        "utf8",
+      );
+      for (const root of checkouts) {
+        const before = readProjectFile(root, path);
+        if (before !== null && !before.equals(body)) {
+          savePreserved({
+            root: storeRoot,
+            conflictId: conflict.id,
+            threadId: `replaced-${nowMs}`,
+            name: "Replaced",
+            path,
+            content: before,
+            nowMs,
+          });
+        }
+        writeProjectFile(root, path, body);
+      }
+      merged.push(path);
+    }
+    yield* store.putConflict({ ...conflict, state: "resolved", resolvedAtMs: nowMs });
+    const names = Array.from(new Set(versions.map((version) => version.name)));
+    yield* notice(
+      input.projectId,
+      conflict.parties.map((party) => party.threadId),
+      `${input.by} merged ${names.join(" and ")}'s versions of ${merged.join(", ")}: both are in the file now.`,
+    );
+    yield* addDecision(
+      input.projectId,
+      null,
+      `Kept both ${names.join(" and ")} versions of ${merged.join(", ")}.`,
+      input.by,
+    );
+    return { files: merged };
+  });
+
+  const threadPeople = Effect.fn("ProjectLedger.threadPeople")(function* (threadId: string) {
+    if (store.thread(threadId) === undefined) yield* refreshThread(threadId);
+    return (store.thread(threadId)?.members ?? []).map((member) => member.id);
+  });
+
   return {
+    restoreVersion,
+    keepBoth,
+    threadPeople,
     branch,
     view,
     threadView,

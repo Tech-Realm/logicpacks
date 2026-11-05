@@ -12,7 +12,6 @@ import {
 
 /** The scripted film demos stay reachable by direct URL only; the signed-in app never links them. */
 export const MACHINE_DEMO_PATH = "/demo/machine";
-export const PACKS_DEMO_PATH = "/demo/packs";
 /** The live "Any app": share a real window from the host. */
 export const LIVE_MACHINE_PATH = "/machine";
 

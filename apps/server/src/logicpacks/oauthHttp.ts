@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
+import { refuseIfProjectsOff } from "./zoneHttp.ts";
 import { LogicPacksAccess, isOnboardingChoice } from "./LogicPacksAccess.ts";
 import {
   issueMemberSession,
@@ -291,6 +292,8 @@ const onboardingRoute = HttpRouter.add(
     ) {
       return json({ choice: body.choice, projectId: null });
     }
+    const projectsOff = yield* refuseIfProjectsOff(caller);
+    if (projectsOff !== null) return projectsOff;
     const created = yield* createProject(STARTER_PROJECT, caller.userId);
     return created.kind === "created"
       ? json({ choice: body.choice, projectId: created.projectId }, 201)

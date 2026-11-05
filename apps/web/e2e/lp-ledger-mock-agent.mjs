@@ -6,10 +6,13 @@
 //   "tell <name> to <task>"                                 -> send_to_thread
 //   "reply: <text>"                                         -> answers the newest message in the inbox
 //   "edit <file> <text> [(hold <n>s)]"                      -> writes the file, as an Edit tool would
-//   "read pack <id>" / "list packs"                         -> packs (the project's saved packs)
+//   "run! <shell command>"                                  -> asks permission for an execute tool call; runs it only if the host allows
+//   "edit! <file> <text>"                                   -> asks permission for an edit tool call; writes only if allowed
 //   "ask <name> to <task> [in <dir>/] [and not touch <dir>/], and <name> to ..., by <day>"
 //                                                           -> goal_plan (drafts a goal)
 //   "goal done[: <note>]"                                   -> goal_update done for this thread's milestone
+//   "branch <name> <file> <text> [(hold <n>s)]"             -> git: new branch <name>, write + commit <file> on it,
+//                                                              hold, switch back and merge it (--no-ff) into where it started
 // and on its own: posts a position when a negotiation waits for it, merges when it is the merger.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -18,6 +21,9 @@ import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
 const sessions = new Map();
+// Permission requests the agent sent the client and is waiting on (ACP session/request_permission).
+const pendingAsks = new Map();
+let askCounter = 0;
 const send = (message) =>
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 const log = (entry) => {
@@ -32,6 +38,29 @@ const update = (sessionId, body) =>
   send({ method: "session/update", params: { sessionId, update: body } });
 const say = (sessionId, text) =>
   update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+
+/** Asks the client for permission the way a real agent does before a tool call; true when allowed. */
+function askPermission(sessionId, toolCall) {
+  return new Promise((resolve) => {
+    const id = `ask-${(askCounter += 1)}`;
+    pendingAsks.set(id, resolve);
+    send({
+      id,
+      method: "session/request_permission",
+      params: {
+        sessionId,
+        toolCall,
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      },
+    });
+  }).then(
+    (result) =>
+      result?.outcome?.outcome === "selected" && /allow/.test(String(result.outcome.optionId)),
+  );
+}
 
 /** Calls one LogicPacks MCP tool the way a CLI agent's shell would: `logicpacks acp-mcp-call <tool> <json>`. */
 function callTool(session, tool, args) {
@@ -107,12 +136,14 @@ async function runTurn(sessionId, promptText) {
   const session = sessions.get(sessionId);
   const ledger = promptText.match(/<logicpacks_project>[\s\S]*?<\/logicpacks_project>/)?.[0] ?? "";
   // LogicPacks wraps the context it adds in <snake_case> blocks; what is left is what the user typed.
-  const userText =
+  const rawText =
     promptText.match(/<user_request>([\s\S]*?)<\/user_request>/)?.[1]?.trim() ??
     promptText
       .replace(/<([a-z][a-z0-9_]*)(\s[^>]*)?>[\s\S]*?<\/\1>/g, "")
       .replace(/^[\s\S]*?\bUser message:\n/, "")
       .trim();
+  // Only what the person typed: the ledger block can carry other threads' goals ("edit x ...").
+  const userText = rawText.split("User message:\n").pop().trim();
   log({ sessionId, cwd: session.cwd, ledger, userText: userText.slice(-600) });
   const replies = [];
 
@@ -153,12 +184,6 @@ async function runTurn(sessionId, promptText) {
   if (who) {
     replies.push(
       `LEDGER ANSWER: ${callTool(session, "lp_project_who_is_working_on", { query: who })}`,
-    );
-  }
-  const pack = userText.match(/read pack ([\w-]+)/i)?.[1];
-  if (pack || /list packs/i.test(userText)) {
-    replies.push(
-      `PACK ANSWER: ${callTool(session, "lp_project_packs", pack ? { query: pack } : {})}`,
     );
   }
   const tell = userText.match(/tell (\w+) to ([^\n]+)/i);
@@ -232,7 +257,86 @@ async function runTurn(sessionId, promptText) {
     replies.push(`GOAL UPDATE: ${answer}`);
   }
   const hold = Number(userText.match(/\(hold (\d+)s\)/)?.[1] ?? 0);
-  const edit = userText.match(/edit (\S+) ([^\n(]+)/i);
+  const branchWork = userText.match(/^branch (\S+) (\S+) ([^\n(]+)/i);
+  if (branchWork) {
+    const [, name, file, text] = branchWork;
+    const identity = ["-c", "user.name=Mock agent", "-c", "user.email=agent@logicpacks.test"];
+    const base = git(session.cwd, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+    const created = git(session.cwd, "checkout", "-b", name);
+    const full = NodePath.join(session.cwd, file);
+    const before = NodeFS.existsSync(full) ? NodeFS.readFileSync(full, "utf8") : "";
+    const after = `${text.trim()}\n`;
+    NodeFS.mkdirSync(NodePath.dirname(full), { recursive: true });
+    NodeFS.writeFileSync(full, after);
+    update(sessionId, {
+      sessionUpdate: "tool_call",
+      toolCallId: `edit-${NodeCrypto.randomUUID()}`,
+      title: `Write ${file}`,
+      kind: "edit",
+      status: "completed",
+      content: [{ type: "diff", path: full, oldText: before, newText: after }],
+      locations: [{ path: full }],
+      rawInput: { file_path: full, content: after },
+    });
+    git(session.cwd, "add", "--", file);
+    const committed = git(session.cwd, ...identity, "commit", "--quiet", "-m", `${name}: ${file}`);
+    log({ branch: name, base, created: created.status, committed: committed.status });
+    if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold * 1000));
+    const back = git(session.cwd, "checkout", base);
+    const merged = git(
+      session.cwd,
+      ...identity,
+      "merge",
+      "--no-ff",
+      "-m",
+      `Merge ${name} into ${base}`,
+      name,
+    );
+    log({ merge: merged.status, back: back.status, stderr: `${back.stderr}${merged.stderr}` });
+    replies.push(
+      merged.status === 0
+        ? `Branch ${name} merged into ${base}. (cwd ${session.cwd})`
+        : `Branch ${name} merge FAILED: ${`${back.stderr}${merged.stderr}`.trim().slice(0, 300)} (cwd ${session.cwd})`,
+    );
+  }
+  const guardedRun = userText.match(/run! ([^\n]+)/i);
+  if (guardedRun) {
+    const command = guardedRun[1].trim();
+    const allowed = await askPermission(sessionId, {
+      toolCallId: `run-${NodeCrypto.randomUUID()}`,
+      title: command,
+      kind: "execute",
+      status: "pending",
+      rawInput: { command },
+    });
+    if (!allowed) replies.push(`REFUSED run: ${command}`);
+    else {
+      const ran = NodeChildProcess.spawnSync("sh", ["-c", command], {
+        cwd: session.cwd,
+        encoding: "utf8",
+      });
+      replies.push(`RAN ${command}: ${(ran.stdout ?? "").trim()} (cwd ${session.cwd})`);
+    }
+  }
+  const guardedEdit = userText.match(/edit! (\S+) ([^\n(]+)/i);
+  if (guardedEdit) {
+    const full = NodePath.join(session.cwd, guardedEdit[1]);
+    const allowed = await askPermission(sessionId, {
+      toolCallId: `edit-${NodeCrypto.randomUUID()}`,
+      title: `Write ${guardedEdit[1]}`,
+      kind: "edit",
+      status: "pending",
+      locations: [{ path: full }],
+      rawInput: { file_path: full },
+    });
+    if (!allowed) replies.push(`REFUSED edit: ${guardedEdit[1]}`);
+    else {
+      NodeFS.mkdirSync(NodePath.dirname(full), { recursive: true });
+      NodeFS.writeFileSync(full, `${guardedEdit[2].trim()}\n`);
+      replies.push(`WROTE ${guardedEdit[1]}. (cwd ${session.cwd})`);
+    }
+  }
+  const edit = userText.match(/(?<![!\w])edit (\S+) ([^\n(]+)/i);
   if (edit) {
     const full = NodePath.join(session.cwd, edit[1]);
     const before = NodeFS.existsSync(full) ? NodeFS.readFileSync(full, "utf8") : "";
@@ -249,7 +353,7 @@ async function runTurn(sessionId, promptText) {
       locations: [{ path: full }],
       rawInput: { file_path: full, content: after },
     });
-    replies.push(`Edited ${edit[1]}.`);
+    replies.push(`Edited ${edit[1]}. (cwd ${session.cwd})`);
     // Holding the turn open keeps LogicPacks sync from committing until the harness says go.
     if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold * 1000));
   }
@@ -340,6 +444,12 @@ input.on("line", (line) => {
   try {
     message = JSON.parse(line);
   } catch {
+    return;
+  }
+  if (message.method === undefined && message.id !== undefined && pendingAsks.has(message.id)) {
+    const resolve = pendingAsks.get(message.id);
+    pendingAsks.delete(message.id);
+    resolve(message.result ?? null);
     return;
   }
   if (message.method === undefined || message.id === undefined || message.id === null) return;

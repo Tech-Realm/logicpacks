@@ -25,6 +25,7 @@ import { useKnownTerminalSessions } from "../state/terminalSessions";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadTerminalActions } from "./terminal/useThreadTerminalActions";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import { LpTerminalGate } from "../logicpacks/AccessControls";
 import { resolveTerminalWorktreePath } from "./ChatView.logic";
 
 /** Where a drawer or panel opens new terminals when a script run overrides the thread's own. */
@@ -249,6 +250,10 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
       )}
     >
       <div className="min-h-0 overflow-clip">
+        <LpTerminalGate
+          projectId={project.id}
+          onReenabled={() => useTerminalUiStateStore.getState().clearTerminalUiState(threadRef)}
+        >
         <ThreadTerminalDrawer
           threadRef={threadRef}
           threadId={threadId}
@@ -278,6 +283,7 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
           terminalLabelsById={terminalLabelsById}
           terminalLaunchLocationsById={terminalLaunchLocationsById}
         />
+        </LpTerminalGate>
       </div>
     </div>
   );
@@ -378,6 +384,10 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
   if (!project || !cwd) return null;
 
   return (
+    <LpTerminalGate
+          projectId={project.id}
+          onReenabled={() => useTerminalUiStateStore.getState().clearTerminalUiState(threadRef)}
+        >
     <ThreadTerminalDrawer
       mode="panel"
       visible={visible}
@@ -412,5 +422,6 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
       terminalLaunchLocationsById={terminalLaunchLocationsById}
       keybindings={keybindings}
     />
+    </LpTerminalGate>
   );
 });

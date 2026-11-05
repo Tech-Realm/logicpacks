@@ -5,6 +5,7 @@
  * or drives an app needs the host owner, or a live control grant from the host:
  * a teammate's agent cannot act on the host's machine without that approval.
  */
+import { refuseIfReadOnly } from "./readOnly.ts";
 import { ANY_APP_GUIDE, appGuideFor, renderAppGuide } from "@logicpacks/shared/recipes/appGuides";
 import { type ProjectId } from "@logicpacks/contracts";
 import * as Effect from "effect/Effect";
@@ -149,6 +150,13 @@ const runRoute = HttpRouter.add(
     const spec = findAppOp(body.op);
     if (!spec)
       return json({ error: "unknown_op", message: `Unknown op ${body.op}. Run lp app ops.` }, 400);
+    if (spec.mutates) {
+      const readOnly = yield* refuseIfReadOnly(
+        target.isOperator ? { kind: "operator" } : { kind: "member", userId: target.subject },
+        target.projectId,
+      );
+      if (readOnly !== null) return readOnly;
+    }
     if (
       spec.mutates &&
       !target.isOperator &&

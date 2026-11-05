@@ -9,22 +9,23 @@ import { describeGlobal, HARNESSES, type Harness } from "./harnesses.ts";
 export const SETUP_URL = "https://logicpacks.io/setup.md";
 export const HELPER_INSTALL = "curl -fsSL https://logicpacks.io/helper.sh | bash";
 export const HELPER_INSTALL_WINDOWS = "irm https://logicpacks.io/helper.ps1 | iex";
+/** The app and the helper together (macOS app + lp; Linux: lp only). */
+export const APP_INSTALL = "curl -fsSL https://logicpacks.io/install.sh | bash";
+export const APP_INSTALL_WINDOWS = "irm https://logicpacks.io/install.ps1 | iex";
 export const DEFAULT_HOST = "https://app.logicpacks.io";
 
 /** The global block: intents to `lp` commands. Kept short on purpose (about 20 lines). */
 export const globalBlockBody = (projectTitle: string | null = null) =>
   [
     `## LogicPacks${projectTitle ? `: ${projectTitle}` : ""}`,
-    `Team work runs through the \`lp\` command (add \`--json\` to parse its output). If \`lp\` is the printer command (macOS, Linux), call \`~/.local/bin/lp\`; in Windows PowerShell type \`lp.cmd\`. If it is missing, follow ${SETUP_URL}.`,
+    `Team work runs through the \`lp\` command (add \`--json\` to parse its output). If \`lp\` is the printer command (macOS, Linux), call \`~/.local/bin/lp\`; in Windows PowerShell 5.1 type \`lp.exe\` (\`lp\` is an Out-Printer alias there). If it is missing, follow ${SETUP_URL}.`,
     "- At the start of a session and after long tasks, run `lp inbox` and tell the user what is new (messages, questions from other agents, conflicts, drift, review requests).",
     '- "share this project" / "create a shared session" -> `lp share`, then give the user the invite link.',
     '- "add my friend X" / "invite X" -> `lp invite <email or name>` (this project only; `--workspace` for every project); "remove X" -> `lp remove <person>`; "turn off the invite link" -> `lp revoke-invite`.',
     '- "what is X working on" -> `lp who X`; "who is working right now" -> `lp agents` (`--workspace` for every project).',
     '- "tell X ..." -> `lp send X "<message>"`.',
     '- To coordinate with a teammate\'s agent, use `lp ask <person> "<question>"` and `lp reply <id> "<answer>"`; check `lp inbox` for questions from other agents and answer them.',
-    '- "request assistance" / "get an expert" -> `lp assist request "<brief>"`.',
     '- "set goals" / "ask X to do Y by Friday" -> `lp goals plan "<goal>" "<person>: <task> by <day>" ...`; your user confirms with `lp goals confirm <id>`. Milestones for you arrive in `lp inbox`: `lp goals start|done <id>`.',
-    '- "save this as a pack" -> `lp packs save "<name>"`; `lp packs list`, `lp packs use <id>`.',
     "- Before you edit shared files, run `lp who <file or topic>`; if a teammate is on it, tell the user first.",
     "- On a conflict or negotiation in `lp inbox`, answer with `lp reply <id>`; when it needs a person, ask the user, then `lp decide <id> mine|theirs|both`.",
     "- If you cannot run shell commands, ask the user to run the `lp` command, or use the `logicpacks` MCP tools if they are set up.",
@@ -49,13 +50,15 @@ export const setupPrompt = (variant: "new" | "installed" = "new") =>
 export interface CommandHelp {
   readonly usage: string;
   readonly does: string;
+  /** Listed only for accounts that have this access-code feature (never in setup.md). */
+  readonly feature?: "talent";
 }
 
 /** Every command an agent may run, in the order setup.md and `lp help agents` list them. */
 export const AGENT_COMMANDS: ReadonlyArray<CommandHelp> = [
   {
     usage: "lp login [--cloud | --host <url>] [--start | --finish]",
-    does: "connect to the LogicPacks Mac app on this computer (no browser step); --cloud or --host <url> sign in to a hosted one with a device code",
+    does: "connect to the LogicPacks app on this computer (no browser step); --cloud or --host <url> sign in to a hosted one with a device code",
   },
   { usage: "lp whoami", does: "who you are signed in as, and on which host" },
   { usage: "lp projects", does: "the projects you can open" },
@@ -99,14 +102,12 @@ export const AGENT_COMMANDS: ReadonlyArray<CommandHelp> = [
   {
     usage: 'lp assist request "<brief>" [--expert <id>]',
     does: "Request assistance: bring in an expert (beta)",
+    feature: "talent",
   },
   {
     usage: "lp assist experts | list | end <request id>",
     does: "the expert catalog, this project's requests, end a request",
-  },
-  {
-    usage: 'lp packs save "<name>" | list | use <id> [--to <person>]',
-    does: "save this session as a pack, list packs, hand one to a thread",
+    feature: "talent",
   },
   {
     usage: 'lp goals plan "<goal>" "<person>: <task> [by <day>]"...',
@@ -159,12 +160,15 @@ export const AGENT_COMMANDS: ReadonlyArray<CommandHelp> = [
 
 const pad = (text: string, width: number) => text.padEnd(width);
 
-export const agentsHelp = () => {
-  const width = Math.max(...AGENT_COMMANDS.map((command) => command.usage.length)) + 2;
+export const agentsHelp = (features: ReadonlyArray<string> = []) => {
+  const commands = AGENT_COMMANDS.filter(
+    (command) => command.feature === undefined || features.includes(command.feature),
+  );
+  const width = Math.max(...commands.map((command) => command.usage.length)) + 2;
   return [
     "LogicPacks for agents. Every command prints readable text; add --json for machine output.",
     "",
-    ...AGENT_COMMANDS.map((command) => `  ${pad(command.usage, width)}${command.does}`),
+    ...commands.map((command) => `  ${pad(command.usage, width)}${command.does}`),
     "",
     `Setup guide: ${SETUP_URL}`,
   ].join("\n");
@@ -174,12 +178,12 @@ export const agentsHelp = () => {
 export const INSTALLED_FILES = {
   helper: {
     macosLinux: [
-      "~/.logicpacks/helper/lp.mjs (the CLI) and ~/.logicpacks/helper/bin/lp (a 2-line sh wrapper)",
-      "~/.local/bin/lp (a symlink to the wrapper)",
+      "~/.logicpacks/helper/bin/lp (the CLI: one standalone executable, no Node needed)",
+      "~/.local/bin/lp (a symlink to it)",
       "~/.logicpacks/helper/config.json (host, token, device name; mode 600), setup.json (what lp setup wrote), queue/ (sessions waiting to upload)",
     ],
     windows: [
-      "%USERPROFILE%\\.logicpacks\\helper\\lp.mjs, bin\\lp.cmd and bin\\lp (Git Bash wrapper)",
+      "%USERPROFILE%\\.logicpacks\\helper\\bin\\lp.exe (the CLI: one standalone executable, no Node needed), plus bin\\lp.cmd (cmd) and bin\\lp (Git Bash) that start it",
       "the user PATH gains %USERPROFILE%\\.logicpacks\\helper\\bin",
       "%USERPROFILE%\\.logicpacks\\helper\\config.json, setup.json, queue\\",
     ],
@@ -230,10 +234,10 @@ export const renderSetupGuide = () =>
     "Windows (PowerShell):",
     "",
     "```powershell",
-    `if (-not (Get-Command lp.cmd -ErrorAction SilentlyContinue)) { ${HELPER_INSTALL_WINDOWS} }`,
+    `if (-not (Get-Command lp.exe -ErrorAction SilentlyContinue)) { ${HELPER_INSTALL_WINDOWS} }`,
     "```",
     "",
-    "The helper needs Node.js 18 or newer (Claude Code, Codex and most agents already have it; otherwise install Node.js LTS from https://nodejs.org). It puts `lp` in `~/.local/bin` on macOS and Linux and in `%USERPROFILE%\\.logicpacks\\helper\\bin` on Windows (`lp.cmd` for PowerShell and cmd, `lp` for Git Bash), and adds that folder to your PATH. macOS and many Linux systems also have a printer command named `lp` (`/usr/bin/lp`): if it comes first on your PATH, call `~/.local/bin/lp` (or put `~/.local/bin` first). In Windows PowerShell 5.1, `lp` is a built-in alias for Out-Printer, so type `lp.cmd` there (for example `lp.cmd login --start`); Git Bash, cmd and PowerShell 7 take plain `lp`. If `lp` is not found right after installing, open a new shell or call it by its full path: `~/.local/bin/lp` or `%USERPROFILE%\\.logicpacks\\helper\\bin\\lp.cmd`.",
+    "The helper is one standalone executable: it needs no Node.js, npm or anything else. The installer downloads the build for your system (macOS Apple silicon or Intel, Linux x64, Windows x64), checks its SHA-256 against https://downloads.logicpacks.io/helper/latest.json, puts `lp` in `~/.local/bin` on macOS and Linux and `lp.exe` in `%USERPROFILE%\\.logicpacks\\helper\\bin` on Windows, and adds that folder to your PATH. The LogicPacks Windows app installs the same `lp.exe` in the same place, so if your user installed the app, `lp` is already there. macOS and many Linux systems also have a printer command named `lp` (`/usr/bin/lp`): if it comes first on your PATH, call `~/.local/bin/lp` (or put `~/.local/bin` first). In Windows PowerShell 5.1, `lp` is a built-in alias for Out-Printer, so type `lp.exe` there (for example `lp.exe login`); Git Bash, cmd and PowerShell 7 take plain `lp`. If `lp` is not found right after installing, open a new shell or call it by its full path: `~/.local/bin/lp` or `%USERPROFILE%\\.logicpacks\\helper\\bin\\lp.exe`.",
     "",
     "Installing only puts the `lp` command in place. It changes no agent's settings: that happens in step 3, and only after your user has seen the diff.",
     "",
@@ -245,7 +249,11 @@ export const renderSetupGuide = () =>
     "lp login",
     "```",
     "",
-    "This connects the helper to the LogicPacks Mac app running on this computer, with no browser step and no account. If it says the app is not running, ask your user to open the LogicPacks Mac app (download: https://logicpacks.io/download), then run `lp login` again. LogicPacks cloud is coming soon; until then everything runs through the app on this computer.",
+    "This connects the helper to the LogicPacks app running on this computer, with no browser step and no account. If it says the app is not running, ask your user to open the LogicPacks app, then run `lp login` again. If the app is not installed, install it with one line (it also installs `lp`): `" +
+      APP_INSTALL +
+      "` on macOS, or `" +
+      APP_INSTALL_WINDOWS +
+      "` in Windows PowerShell; or download it from https://logicpacks.io/download. LogicPacks cloud is coming soon; until then everything runs through the app on this computer.",
     "",
     "Teams that run their own host add `--host https://their-host`. That path asks your user to approve a device code in a browser: run `lp login --host <url> --start`, show your user the link and code, then `lp login --host <url> --finish` once they approve.",
     "",
@@ -311,7 +319,7 @@ export const renderSetupGuide = () =>
     "",
     "Only if your user asks for it. Show the diff first with `lp install --dry-run`, then `lp install --yes` after they approve (each changed file is backed up first).",
     "",
-    'If your user wants MCP tools as well, `lp install` registers the `logicpacks` MCP server (`lp mcp`, stdio) with Claude Code and Codex (and adds the Claude Code session hooks and the background watcher that stream sessions into the project). Other harnesses can add it by hand: command `lp`, args `["mcp"]`. The tools are a small subset of the CLI (who is working on what, send, ask, reply, conflicts, notes, packs). The CLI is the main way.',
+    'If your user wants MCP tools as well, `lp install` registers the `logicpacks` MCP server (`lp mcp`, stdio) with Claude Code and Codex (and adds the Claude Code session hooks and the background watcher that stream sessions into the project). Other harnesses can add it by hand: command `lp`, args `["mcp"]`. The tools are a small subset of the CLI (who is working on what, send, ask, reply, conflicts, notes). The CLI is the main way.',
     "",
     "## What streams to the project",
     "",

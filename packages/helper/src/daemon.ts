@@ -1,9 +1,11 @@
 // oxlint-disable logicpacks/no-global-process-runtime -- plain Node CLI shipped as one file; there is no Effect runtime to inject.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { commitFile, isDryRun, runOrList } from "./fileOps.ts";
+import type { SelfLaunch } from "./launcher.ts";
 import { helperHome } from "./store.ts";
 
 const LABEL = "io.logicpacks.helper";
@@ -38,7 +40,8 @@ const systemdUnitFile = () =>
  * Keeps `lp watch` running in the background: it tails Codex sessions (Codex has no
  * hooks), catches Claude Code output the hooks missed, and resends queued batches.
  */
-export const installWatcher = (script: string): string => {
+export const installWatcher = (launch: SelfLaunch): string => {
+  const argv = [launch.command, ...launch.args, "watch"];
   const log = NodePath.join(helperHome(), "watch.log");
   const env = process.env.LP_HELPER_HOME ? { LP_HELPER_HOME: process.env.LP_HELPER_HOME } : {};
   if (process.platform === "darwin") {
@@ -52,7 +55,7 @@ export const installWatcher = (script: string): string => {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${LABEL}</string>
-<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(script)}</string><string>watch</string></array>
+<key>ProgramArguments</key><array>${argv.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>EnvironmentVariables</key><dict>${envXml}</dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
@@ -81,7 +84,7 @@ export const installWatcher = (script: string): string => {
       .join("");
     commitFile(
       file,
-      `[Unit]\nDescription=LogicPacks helper\n\n[Service]\nExecStart="${process.execPath}" "${script}" watch\n${envLines}Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`,
+      `[Unit]\nDescription=LogicPacks helper\n\n[Service]\nExecStart=${argv.map((arg) => `"${arg}"`).join(" ")}\n${envLines}Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`,
     );
     const enabled = runOrList(
       "systemctl --user daemon-reload; systemctl --user enable --now logicpacks-helper.service",
@@ -100,10 +103,10 @@ export const installWatcher = (script: string): string => {
     const envSet = Object.entries(env)
       .map(([key, value]) => `env("${key}") = "${value}"\r\n`)
       .join("");
-    // WScript runs node with no window; 0 = hidden, False = do not wait.
+    // WScript runs lp with no window; 0 = hidden, False = do not wait.
     commitFile(
       file,
-      `Set shell = CreateObject("WScript.Shell")\r\nSet env = shell.Environment("Process")\r\n${envSet}shell.Run "${quote(process.execPath)} ${quote(script)} watch", 0, False\r\n`,
+      `Set shell = CreateObject("WScript.Shell")\r\nSet env = shell.Environment("Process")\r\n${envSet}shell.Run "${argv.map(quote).join(" ")}", 0, False\r\n`,
     );
     const started = runOrList(`wscript.exe "${file}"`, () => run("wscript.exe", [file]), {
       status: 0,
@@ -113,6 +116,23 @@ export const installWatcher = (script: string): string => {
     return `Startup launcher ${file}`;
   }
   throw new Error("No launchd or systemd here. Run `lp watch` in the background yourself.");
+};
+
+/** PowerShell that lists running watchers: lp.exe watch, or node running the older lp.mjs watch. */
+const WINDOWS_WATCHERS =
+  "Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'lp.exe' -and $_.CommandLine -like '* watch*') -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*lp.mjs*watch*') }";
+
+/** Whether a watcher launcher is in place (launchd agent, systemd unit or Startup file). */
+export const watcherInstalled = () => {
+  const file =
+    process.platform === "darwin"
+      ? launchAgentFile()
+      : process.platform === "linux"
+        ? systemdUnitFile()
+        : process.platform === "win32"
+          ? startupFile()
+          : null;
+  return file !== null && NodeFS.existsSync(file);
 };
 
 export const uninstallWatcher = () => {
@@ -130,11 +150,11 @@ export const uninstallWatcher = () => {
   } else if (process.platform === "win32") {
     commitFile(startupFile(), null);
     if (isDryRun()) return;
-    // Stop the running watcher: the node process whose command line runs this helper's `watch`.
+    // Stop the running watcher: lp.exe (or node running the older lp.mjs) with `watch` on its command line.
     run("powershell.exe", [
       "-NoProfile",
       "-Command",
-      "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*lp.mjs*watch*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+      `${WINDOWS_WATCHERS} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
     ]);
   }
 };
@@ -147,11 +167,7 @@ export const watcherRunning = () => {
     return run("systemctl", ["--user", "is-active", "logicpacks-helper.service"]).status === 0;
   }
   if (process.platform === "win32") {
-    const found = run("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      "@(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*lp.mjs*watch*' }).Count",
-    ]);
+    const found = run("powershell.exe", ["-NoProfile", "-Command", `@(${WINDOWS_WATCHERS}).Count`]);
     return Number(found.stdout.trim()) > 0;
   }
   return false;

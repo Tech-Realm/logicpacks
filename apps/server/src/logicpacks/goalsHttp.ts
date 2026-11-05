@@ -1,4 +1,5 @@
 import { LP_HOST_PARTICIPANT_ID } from "@logicpacks/contracts";
+import { refuseIfReadOnly } from "./readOnly.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -35,6 +36,11 @@ const participant = Effect.gen(function* () {
   return caller.kind === "member" ? caller.userId : LP_HOST_PARTICIPANT_ID;
 });
 
+const participantCaller = (participantId: string) =>
+  participantId === LP_HOST_PARTICIPANT_ID
+    ? ({ kind: "operator" } as const)
+    : ({ kind: "member", userId: participantId } as const);
+
 const inProject = Effect.fn("logicpacks.goals.inProject")(function* (
   participantId: string,
   projectId: string,
@@ -64,6 +70,8 @@ const withGoal = Effect.fn("logicpacks.goals.withGoal")(function* <A, E, R>(
   const goals = yield* ProjectGoals;
   const goal = goals.get(goalId);
   if (goal === undefined || !(yield* inProject(participantId, goal.projectId))) return notFound;
+  const readOnly = yield* refuseIfReadOnly(participantCaller(participantId), goal.projectId);
+  if (readOnly !== null) return readOnly;
   return yield* run({ goal, participantId });
 });
 
@@ -124,6 +132,8 @@ const createRoute = HttpRouter.add(
     const body = yield* readBody(CreateBody);
     if (body === null) return badRequest;
     if (!(yield* inProject(participantId, body.projectId))) return notFound;
+    const readOnly = yield* refuseIfReadOnly(participantCaller(participantId), body.projectId);
+    if (readOnly !== null) return readOnly;
     const goals = yield* ProjectGoals;
     const actor = yield* goals.actorFor(participantId, body.projectId);
     const goal = yield* goals.create({

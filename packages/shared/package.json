@@ -531,10 +531,6 @@
       "types": "./src/recipes/runtime.ts",
       "import": "./src/recipes/runtime.ts"
     },
-    "./recipes/packContext": {
-      "types": "./src/recipes/packContext.ts",
-      "import": "./src/recipes/packContext.ts"
-    },
     "./recipes/appGuides": {
       "types": "./src/recipes/appGuides.ts",
       "import": "./src/recipes/appGuides.ts"

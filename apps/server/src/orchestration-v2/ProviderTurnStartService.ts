@@ -681,6 +681,9 @@ export const layer: Layer.Layer<
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection: run.modelSelection,
+        ...(message === undefined
+          ? {}
+          : { message: { messageId: message.id, senderThreadId: message.senderThreadId } }),
       });
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(

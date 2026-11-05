@@ -1,3 +1,5 @@
+import { isMacPlatform } from "../lib/utils";
+
 /**
  * Tour steps in order. Each selector lists a `data-tour` anchor, then the element's existing
  * test id, so steps survive markup moves. A step whose anchor is not on screen is skipped.
@@ -57,13 +59,6 @@ export const PRODUCT_TOUR_STEPS: readonly ProductTourStep[] = [
     placement: "bottom",
   },
   {
-    id: "packs",
-    title: "Packs",
-    body: "Save a thread as a pack and reuse it in another thread or project. Beta.",
-    selector: '[data-tour="packs"], [data-testid="lp-packs-open"]',
-    placement: "bottom",
-  },
-  {
     id: "request-assistance",
     title: "Request assistance",
     body: "Stuck? Ask a human expert to look at the thread with you. Beta.",
@@ -102,7 +97,7 @@ export const PRODUCT_TOUR_STEPS: readonly ProductTourStep[] = [
   {
     id: "layout-switcher",
     title: "Dev or Vibe",
-    body: "Switch layouts here, or press Cmd+Alt+L. Dev puts files first, Vibe puts chat first.",
+    body: `Switch layouts here, or press ${typeof navigator !== "undefined" && !isMacPlatform(navigator.platform) ? "Ctrl" : "Cmd"}+Alt+L. Dev puts files first, Vibe puts chat first.`,
     selector: '[data-tour="layout-switcher"]',
     placement: "bottom",
   },

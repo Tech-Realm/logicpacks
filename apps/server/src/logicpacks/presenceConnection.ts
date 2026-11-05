@@ -10,6 +10,8 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerConfig from "../config.ts";
+import { messageAuthorStore } from "./messageAuthors.ts";
 import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { normalizePresencePath, presenceColorIndex } from "./presence.ts";
 import { PresenceService } from "./PresenceService.ts";
@@ -50,12 +52,13 @@ export const agentActorFor = (
   owner: PresenceOwner,
   agentId: string,
   label?: string | undefined,
+  colorIndex?: number,
 ): PresenceActor => ({
   id: `agent:${agentId}`,
   kind: "agent",
   name: `${owner.name}'s ${agentLabelText(label)}`,
   // An agent wears its owner's colour, so "Ali" and "Ali's agent" read as one team.
-  colorIndex: presenceColorIndex(owner.id),
+  colorIndex: colorIndex ?? presenceColorIndex(owner.id),
 });
 
 /**
@@ -73,6 +76,13 @@ export const makePresenceConnection = Effect.fn("logicpacks.makePresenceConnecti
     const presence = yield* PresenceService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const owner = yield* presenceOwnerFor(input.subject);
+    const configOption = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+    const ownerUserId = memberUserIdFromSubject(input.subject);
+    // The admin's colour pick for this person, else the stable hash.
+    const ownerColor = () =>
+      configOption._tag === "Some"
+        ? messageAuthorStore(configOption.value.stateDir).colorOf(ownerUserId)
+        : presenceColorIndex(owner.id);
 
     const resolveProjectId = Effect.fn("logicpacks.presence.resolveProjectId")(function* (
       update: PresenceUpdateInput,
@@ -91,12 +101,12 @@ export const makePresenceConnection = Effect.fn("logicpacks.makePresenceConnecti
       const key = `${input.keyPrefix}:${update.clientId}`;
       const isAgent = update.actorKind === "agent" && update.source === "helper";
       const actor: PresenceActor = isAgent
-        ? agentActorFor(owner, `${owner.id}:${update.clientId}`, update.agentLabel)
+        ? agentActorFor(owner, `${owner.id}:${update.clientId}`, update.agentLabel, ownerColor())
         : {
             id: owner.id,
             kind: "human",
             name: owner.name,
-            colorIndex: presenceColorIndex(owner.id),
+            colorIndex: ownerColor(),
           };
       yield* presence.write({
         key,

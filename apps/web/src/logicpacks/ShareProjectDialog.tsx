@@ -1,6 +1,8 @@
 import { CopyIcon, LinkIcon, RotateCcwIcon, SendIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useState, type FormEvent } from "react";
 
+import { zonesForPreset, type PresetId, type ZoneValues } from "@logicpacks/contracts";
+
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "../components/ui/dialog";
@@ -15,7 +17,20 @@ import {
 import { Switch } from "../components/ui/switch";
 import { toastManager } from "../components/ui/toast";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { lpAbsoluteUrl, lpApi } from "./api";
+import {
+  AccessLogList,
+  AccessRequestsList,
+  AdvancedZones,
+  AI_SUBSCRIPTION_NOTE,
+  FullAccessConfirm,
+  MemberAccessSelect,
+  PresetPicker,
+  SeatBadges,
+  useGuardedAccessChange,
+} from "./AccessControls";
+import { accessApi } from "./accessApi";
+import { lpApi } from "./api";
+import { lpPublicShareUrl, lpShareUrl, useLpRelay, useLpShareBase } from "./shareUrl";
 import { looksLikeEmail, shareApi, type LpLinkExpiry, type LpShareOverview } from "./shareApi";
 
 const errorText = (error: unknown) =>
@@ -53,9 +68,23 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
   const [person, setPerson] = useState("");
   const [hint, setHint] = useState<string | null>(null);
   const [lastInvite, setLastInvite] = useState<{ path: string; email: string } | null>(null);
+  const shareBase = useLpShareBase();
+  const relay = useLpRelay();
+  /** Public address first, then this network's address. */
+  const shareUrl = (path: string) => lpPublicShareUrl(path, relay) ?? lpShareUrl(path, shareBase);
   const [domain, setDomain] = useState("");
   const [domainOn, setDomainOn] = useState(false);
   const [linkHint, setLinkHint] = useState<string | null>(null);
+  /** The project default, and a person's override, both wait for the warning when a shell is granted. */
+  const defaultChange = useGuardedAccessChange((zones, confirmFull) =>
+    accessApi.set({ projectId, zones, confirmFull }).then(() => load()),
+  );
+  const [memberTarget, setMemberTarget] = useState<string | null>(null);
+  const memberChange = useGuardedAccessChange((zones, confirmFull) =>
+    accessApi
+      .set({ projectId, userId: memberTarget ?? "", zones, confirmFull })
+      .then(() => load()),
+  );
 
   const load = () =>
     shareApi
@@ -105,7 +134,8 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
 
   const link = data?.link ?? null;
   const linkOn = link?.enabled === true;
-  const linkUrl = link === null ? null : lpAbsoluteUrl(link.path);
+  const linkUrl = link === null ? null : shareUrl(link.path);
+  const lanUrl = link === null || linkUrl === lpShareUrl(link.path, shareBase) ? null : lpShareUrl(link.path, shareBase);
   const updateLink = (change: Parameters<typeof shareApi.updateLink>[1]) =>
     run(() => shareApi.updateLink(projectId, change), setLinkHint);
 
@@ -146,7 +176,9 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
                     size="xs"
                     variant="outline"
                     data-testid="lp-share-copy-new-invite"
-                    onClick={() => copy(lpAbsoluteUrl(lastInvite.path), "Invite link copied")}
+                    onClick={() =>
+                      copy(shareUrl(lastInvite.path), "Invite link copied")
+                    }
                   >
                     <CopyIcon />
                     Copy invite link
@@ -155,6 +187,55 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
               ) : null}
             </form>
           )}
+
+          {data?.canManage && data.access?.default ? (
+            <section
+              className="flex flex-col gap-2 rounded-row border border-hairline p-3"
+              aria-label="Access"
+              data-testid="lp-access"
+            >
+              <div>
+                <h3 className="text-sm font-medium">What people you share with can do</h3>
+                <p className="text-xs text-muted-foreground" data-testid="lp-access-ai-note">
+                  {AI_SUBSCRIPTION_NOTE}
+                </p>
+              </div>
+              <PresetPicker
+                testIdPrefix="lp-access-default"
+                value={data.access.default.preset}
+                onPick={(preset: PresetId) => defaultChange.request(zonesForPreset(preset))}
+              />
+              <p className="text-xs text-muted-foreground">
+                {data.access.defaultIsSet ? "Applies to everyone without their own setting, including the share link." : "Default for everyone without their own setting, including the share link."}
+              </p>
+              <Hint testId="lp-sandbox-note">
+                {data.access.sandbox?.available
+                  ? "On this computer, Claude turns and terminals for people you share with run inside an operating-system sandbox limited to the shared folders. Codex and OpenCode keep tool limits only."
+                  : "This computer has no sandboxed compute (Windows hosts cannot sandbox yet), so people you share with get the agent's tool limits only. Leave Compute off unless you trust them."}
+              </Hint>
+              <AdvancedZones
+                zones={data.access.default.zones as unknown as ZoneValues}
+                hostAgents={data.access.hostAgents}
+                sandbox={data.access.sandbox}
+                onChange={(next) => defaultChange.request(next)}
+              />
+              {defaultChange.pending ? (
+                <FullAccessConfirm onConfirm={defaultChange.confirm} onCancel={defaultChange.cancel} />
+              ) : null}
+              {defaultChange.error ? <Hint>{defaultChange.error}</Hint> : null}
+            </section>
+          ) : data?.access?.mine ? (
+            <Hint testId="lp-access-mine">
+              Your access here: {data.access.mine.preset === "custom" ? "custom" : data.access.mine.preset}.
+            </Hint>
+          ) : null}
+          {data?.canManage && data.access ? (
+            <AccessRequestsList
+              projectId={projectId}
+              requests={data.access.requests ?? []}
+              onDone={() => void load()}
+            />
+          ) : null}
 
           <section className="flex flex-col gap-1" aria-label="People">
             <h3 className="text-sm font-medium">People</h3>
@@ -170,13 +251,29 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
                   {member.role === "owner" ? (
                     <span className="text-xs text-muted-foreground">Owner</span>
                   ) : data.canManage ? (
-                    <Button
-                      size="xs"
-                      variant="ghost-destructive"
-                      onClick={() => run(() => lpApi.unshareProject(projectId, member.user.userId))}
-                    >
-                      Remove
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <SeatBadges seat={data.access?.members?.[member.user.userId]} />
+                      <MemberAccessSelect
+                        testId={`lp-access-member-${member.user.userId}`}
+                        seat={data.access?.members?.[member.user.userId]}
+                        onPick={(preset) => {
+                          setMemberTarget(member.user.userId);
+                          memberChange.request(zonesForPreset(preset));
+                        }}
+                        onFollowDefault={() =>
+                          run(() =>
+                            accessApi.set({ projectId, userId: member.user.userId, clear: true }),
+                          )
+                        }
+                      />
+                      <Button
+                        size="xs"
+                        variant="ghost-destructive"
+                        onClick={() => run(() => lpApi.unshareProject(projectId, member.user.userId))}
+                      >
+                        Remove
+                      </Button>
+                    </div>
                   ) : (
                     <span className="text-xs text-muted-foreground">Member</span>
                   )}
@@ -204,7 +301,7 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
                       size="xs"
                       variant="ghost"
                       data-testid="lp-share-pending-copy"
-                      onClick={() => copy(lpAbsoluteUrl(invite.path), "Invite link copied")}
+                      onClick={() => copy(shareUrl(invite.path), "Invite link copied")}
                     >
                       <CopyIcon />
                       Copy link
@@ -242,6 +339,11 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
               ))}
             </ul>
           </section>
+
+          {memberChange.pending ? (
+            <FullAccessConfirm onConfirm={memberChange.confirm} onCancel={memberChange.cancel} />
+          ) : null}
+          {memberChange.error ? <Hint>{memberChange.error}</Hint> : null}
 
           {data?.canManage ? (
             <section
@@ -282,6 +384,25 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
                       Copy
                     </Button>
                   </div>
+                  {relay !== null && relay.state !== "connected" ? (
+                    <p className="text-xs text-muted-foreground" data-testid="lp-share-relay-state">
+                      {relay.state === "off"
+                        ? "The public link is off. This link only works on your network."
+                        : "Connecting the public link. This link only works on your network for now."}
+                    </p>
+                  ) : null}
+                  {lanUrl ? (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="shrink-0">On this network only</span>
+                      <span className="min-w-0 flex-1 truncate" data-testid="lp-share-link-lan">
+                        {lanUrl}
+                      </span>
+                      <Button size="xs" variant="ghost" onClick={() => copy(lanUrl, "Network link copied")}>
+                        <CopyIcon />
+                        Copy
+                      </Button>
+                    </div>
+                  ) : null}
                   <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2 text-sm">
                     <span className="text-muted-foreground">Role</span>
                     <span>
@@ -401,6 +522,7 @@ export function ShareProjectDialog({ projectId, title }: { projectId: string; ti
               ) : null}
             </section>
           ) : null}
+          {data?.canManage && data.access?.log ? <AccessLogList log={data.access.log} /> : null}
         </div>
       </DialogPanel>
     </>

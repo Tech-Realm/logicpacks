@@ -368,7 +368,6 @@ const LOGICPACKS_MCP_TOOLS: Readonly<Record<string, LogicPacksMcpToolDefinition>
     "project-update",
   ),
   lp_project_note: tool(["Note", "Noting", "Noted", "the project ledger"], "project-update"),
-  lp_project_packs: tool(["Read", "Reading", "Read", "the project's packs"], "project-read"),
   lp_project_goals: tool(["Read", "Reading", "Read", "the project's goals"], "project-read"),
   lp_project_goal_plan: tool(["Draft", "Drafting", "Drafted", "a goal"], "project-update"),
   lp_project_goal_update: tool(

@@ -1,4 +1,17 @@
-import type { ProjectId } from "@logicpacks/contracts";
+import {
+  canReadFiles,
+  SECRET_FILE_MESSAGE,
+  sharedFolders,
+  type ProjectId,
+} from "@logicpacks/contracts";
+import { refuseIfReadOnly } from "./readOnly.ts";
+import {
+  hiddenSecretTest,
+  OUTSIDE_FOLDERS_MESSAGE,
+  refuseIfFolderLimited,
+  refuseIfZone,
+  sharedFolderTest,
+} from "./zoneHttp.ts";
 import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,6 +26,7 @@ import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { LogicPacksSync } from "./LogicPacksSync.ts";
 import {
   githubRepoOf,
+  originRemote,
   ProjectFileError,
   publicCloneUrl,
   type UploadConflict,
@@ -75,8 +89,13 @@ const uploadRoute = HttpRouter.add(
   "POST",
   "/api/lp/projects/upload",
   Effect.gen(function* () {
-    const project = yield* projectFor(yield* queryParam("projectId"));
+    const uploadProjectId = yield* queryParam("projectId");
+    const project = yield* projectFor(uploadProjectId);
     if (!project.ok) return project.response;
+    const readOnly = yield* refuseIfReadOnly(project.caller, uploadProjectId);
+    if (readOnly !== null) return readOnly;
+    const zoneOff = yield* refuseIfZone(project.caller, uploadProjectId, ["files.write"]);
+    if (zoneOff !== null) return zoneOff;
     const maxBytes = uploadMaxBytes();
     const request = yield* HttpServerRequest.HttpServerRequest;
     const declared = Number(request.headers["content-length"] ?? "0");
@@ -103,6 +122,15 @@ const uploadRoute = HttpRouter.add(
     const folder = yield* queryParam("folder");
     const path = yield* queryParam("path");
     const conflict = conflictOf(yield* queryParam("conflict"));
+    // Secret files stay hidden unless the host granted them, for writes too.
+    const hidden = yield* hiddenSecretTest(project.caller, uploadProjectId);
+    if (hidden !== null && hidden([folder, path].filter(Boolean).join("/"))) {
+      return json({ error: "zone_off", message: SECRET_FILE_MESSAGE }, 403);
+    }
+    const inFolders = yield* sharedFolderTest(project.caller, uploadProjectId, project.root);
+    if (inFolders !== null && !inFolders([folder, path].filter(Boolean).join("/"))) {
+      return json({ error: "zone_off", message: OUTSIDE_FOLDERS_MESSAGE }, 403);
+    }
     return yield* Effect.sync(() => {
       try {
         return json(
@@ -127,12 +155,27 @@ const zipRoute = HttpRouter.add(
   "GET",
   "/api/lp/projects/zip",
   Effect.gen(function* () {
-    const project = yield* projectFor(yield* queryParam("projectId"));
+    const zipProjectId = yield* queryParam("projectId");
+    const project = yield* projectFor(zipProjectId);
     if (!project.ok) return project.response;
+    const zoneOff = yield* refuseIfZone(project.caller, zipProjectId, ["files.read"]);
+    if (zoneOff !== null) return zoneOff;
+    const hiddenSecret = yield* hiddenSecretTest(project.caller, zipProjectId);
+    const inFolders = yield* sharedFolderTest(project.caller, zipProjectId, project.root);
+    const hidden =
+      hiddenSecret === null && inFolders === null
+        ? null
+        : (relative: string) =>
+            (hiddenSecret?.(relative) ?? false) || (inFolders !== null && !inFolders(relative));
     const folderName = zipFolderName(project.title);
     return yield* Effect.sync(() => {
       try {
-        const zip = zipProject({ root: project.root, folderName, maxBytes: zipMaxBytes() });
+        const zip = zipProject({
+          root: project.root,
+          folderName,
+          maxBytes: zipMaxBytes(),
+          exclude: hidden ?? undefined,
+        });
         return HttpServerResponse.uint8Array(zip, {
           headers: {
             "content-type": "application/zip",
@@ -155,6 +198,10 @@ const localRoute = HttpRouter.add(
     const projectId = yield* queryParam("projectId");
     const project = yield* projectFor(projectId);
     if (!project.ok) return project.response;
+    const zoneOff = yield* refuseIfZone(project.caller, projectId, ["files.read"]);
+    if (zoneOff !== null) return zoneOff;
+    const limited = yield* refuseIfFolderLimited(project.caller, projectId);
+    if (limited !== null) return limited;
     const sync = yield* LogicPacksSync;
     const status = sync.status([projectId])[0];
     const remote = status?.remoteUrl ?? null;
@@ -162,8 +209,8 @@ const localRoute = HttpRouter.add(
       projectId,
       title: project.title,
       synced: status !== undefined && status.state !== "not_synced" && remote !== null,
-      cloneUrl: publicCloneUrl(remote),
-      githubRepo: githubRepoOf(remote),
+      cloneUrl: publicCloneUrl(remote ?? originRemote(project.root)),
+      githubRepo: githubRepoOf(remote ?? originRemote(project.root)),
       branch: status?.branch ?? null,
       cloudHost: sync.isCloudHost,
       syncSeconds: sync.syncSeconds,
@@ -189,12 +236,19 @@ const helperProjectsRoute = HttpRouter.add(
     const store = yield* ProjectStore.ProjectStoreV2;
     const shells = yield* store.listShells().pipe(Effect.orElseSucceed(() => []));
     const visible = caller.kind === "member" ? access.visibleProjectIds(caller.userId) : null;
-    const listed = shells.filter((shell) => visible === null || visible.has(shell.id as string));
+    // Only projects whose files this person may read: `lp clone` hands out the repository.
+    const listed = shells.filter(
+      (shell) =>
+        (visible === null || visible.has(shell.id as string)) &&
+        (caller.kind !== "member" ||
+          (canReadFiles(access.zonesOf(caller.userId, shell.id as string).zones) &&
+            sharedFolders(access.zonesOf(caller.userId, shell.id as string).zones).length === 0)),
+    );
     const statuses = sync.status(listed.map((shell) => shell.id as string));
     return json({
       syncSeconds: sync.syncSeconds,
       projects: listed.map((shell, index) => {
-        const remote = statuses[index]?.remoteUrl ?? null;
+        const remote = statuses[index]?.remoteUrl ?? originRemote(shell.workspaceRoot);
         return {
           projectId: shell.id,
           title: shell.title,

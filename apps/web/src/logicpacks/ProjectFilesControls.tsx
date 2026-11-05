@@ -268,7 +268,7 @@ function GetLocalBody({
           ) : null}
           {local?.synced && macLink ? (
             <section className="flex flex-col gap-2">
-              <h3 className="font-medium">LogicPacks for Mac</h3>
+              <h3 className="font-medium">The LogicPacks app</h3>
               <p className="text-muted-foreground">
                 Opens the app, clones the project and keeps it synced. No app yet? This opens the
                 download page. You can also choose Add project, then Git URL, in the app.
@@ -281,7 +281,7 @@ function GetLocalBody({
                 onClick={() => openOnMac(macLink)}
               >
                 <LaptopIcon aria-hidden />
-                Open in LogicPacks for Mac
+                Open in the LogicPacks app
               </Button>
             </section>
           ) : null}

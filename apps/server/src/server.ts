@@ -160,6 +160,7 @@ import * as LogicPacksHelperPairing from "./logicpacks/helperPairing.ts";
 import * as LogicPacksHttp from "./logicpacks/http.ts";
 import * as LogicPacksShares from "./logicpacks/ProjectShares.ts";
 import * as LogicPacksSharesHttp from "./logicpacks/sharesHttp.ts";
+import * as LogicPacksAccessHttp from "./logicpacks/accessHttp.ts";
 import * as LogicPacksShareMail from "./logicpacks/shareMail.ts";
 import * as LogicPacksSync from "./logicpacks/LogicPacksSync.ts";
 import * as LogicPacksRecipeHttp from "./logicpacks/recipeHttp.ts";
@@ -169,10 +170,14 @@ import * as LogicPacksSyncHttp from "./logicpacks/syncHttp.ts";
 import * as LogicPacksProjectFilesHttp from "./logicpacks/projectFilesHttp.ts";
 import * as LogicPacksPresence from "./logicpacks/PresenceService.ts";
 import * as LogicPacksPresenceAgents from "./logicpacks/presenceAgents.ts";
+import * as LogicPacksMemberTerminals from "./logicpacks/memberTerminals.ts";
 import * as LogicPacksPresenceHttp from "./logicpacks/presenceHttp.ts";
+import * as ShareRelay from "./shareRelay/ShareRelay.ts";
+import * as ShareRelayHttp from "./shareRelay/shareRelayHttp.ts";
 import * as LogicPacksUsage from "./logicpacks/LogicPacksUsage.ts";
 import * as LogicPacksLedger from "./logicpacks/ProjectLedger.ts";
 import * as LogicPacksLedgerHttp from "./logicpacks/ledgerHttp.ts";
+import * as LogicPacksMessageAuthorsHttp from "./logicpacks/messageAuthorsHttp.ts";
 import * as LogicPacksConnectHttp from "./logicpacks/connectHttp.ts";
 import * as LogicPacksGoals from "./logicpacks/ProjectGoals.ts";
 import * as LogicPacksGoalJudge from "./logicpacks/goalJudge.ts";
@@ -183,7 +188,6 @@ import * as LogicPacksFeatureAccess from "./logicpacks/FeatureAccess.ts";
 import * as LogicPacksFeatureHttp from "./logicpacks/featureHttp.ts";
 import * as LogicPacksExternalTeam from "./logicpacks/ExternalTeamService.ts";
 import * as LogicPacksExternalHttp from "./logicpacks/externalHttp.ts";
-import * as LogicPacksPacksHttp from "./logicpacks/packsHttp.ts";
 import * as LogicPacksProviderLoginHttp from "./logicpacks/providerLoginHttp.ts";
 import * as LogicPacksUserPrefsHttp from "./logicpacks/userPrefsHttp.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
@@ -672,8 +676,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provide(layerLogicPacksLedger),
   ),
   LogicPacksPresenceAgents.layer,
+  LogicPacksMemberTerminals.layerTerminalReaper,
   LogicPacksExternalSessions.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   LogicPacksHelperPairing.layer,
+  ShareRelay.layer,
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
@@ -800,20 +806,22 @@ const layerMakeRoutes = Layer.mergeAll(
     LogicPacksHttp.layer,
     LogicPacksOAuthHttp.layer,
     LogicPacksSharesHttp.layer,
+    LogicPacksAccessHttp.layer,
     LogicPacksSyncHttp.layer,
     LogicPacksProjectFilesHttp.layer,
     LogicPacksRecipeHttp.layer,
     LogicPacksAppStreamHttp.layer,
     LogicPacksAppOpsHttp.layer,
     LogicPacksPresenceHttp.layer,
+    ShareRelayHttp.layer,
     LogicPacksHelperHttp.layer,
     LogicPacksLedgerHttp.layer,
+    LogicPacksMessageAuthorsHttp.layer,
     LogicPacksConnectHttp.layer,
     LogicPacksGoalsHttp.layer,
     LogicPacksExpertsHttp.layer,
     LogicPacksFeatureHttp.layer,
     LogicPacksExternalHttp.layer,
-    LogicPacksPacksHttp.layer,
     LogicPacksProviderLoginHttp.layer,
     LogicPacksUserPrefsHttp.layer,
     DeviceHubProxy.layer,

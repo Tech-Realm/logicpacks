@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Experts, packs, agent login and the signed-out landing, end to end:
+// Experts, agent login and the signed-out landing, end to end:
 //   node apps/web/e2e/logicpacks-experts.e2e.mjs [--port 3861] [--web-port 5796] [--shots <dir>] [--keep]
 // One cloud host from this tree and the Vite dev client in front of it (no production build).
 // The agent is the scripted ACP mock (lp-ledger-mock-agent.mjs). `claude setup-token` and
@@ -11,14 +11,13 @@
 //   3 Ana works in a thread, opens Request assistance, picks an expert, brief comes from the thread
 //   4 the expert signs in, sees the request, accepts and joins the project with a thread
 //   5 Ana shares her agent login (grant), delegates; it arrives in the expert's thread
-//   6 who's working shows the expert; Ana saves the thread as a pack, sees its context,
-//     uses it in the expert's thread, and the agent reads it through the packs tool
+//   6 who's working shows the expert
 //   5b the expert runs a real turn on Ana's granted Claude login (a scripted Claude that
 //      answers with the token and config dir it runs under): it is Ana's
 //   6b Ana revokes the grant: the login leaves the expert's picker and a turn on it is
 //      refused before Claude starts
 //   7 Ana ends the session: the grant is revoked and the expert is out of the project
-//   8 log out lands on the log in page again; /demo/packs renders
+//   8 log out lands on the log in page again
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
@@ -297,8 +296,6 @@ try {
     LOGICPACKS_CLOUD_HOST: "true",
     LOGICPACKS_MEMBERS_OWN_PROVIDERS: "false",
     LOGICPACKS_SYNC_SECONDS: "0",
-    // Packs are a gated feature: Ana and the expert have it unlocked on this host.
-    LOGICPACKS_FEATURES_PACKS: `${ANA},${INGRID}`,
     // Storing their Claude and Codex logins on this host is cloud_agents: unlocked for both.
     LOGICPACKS_FEATURES_CLOUD_AGENTS: `${ANA},${INGRID}`,
     // Request assistance (expert cards) is part of Talent.
@@ -581,41 +578,11 @@ try {
     await shot(ingrid, "experts-turn-on-grant");
   });
 
-  await step("6 who's working marks the expert; save the thread as a pack and use it", async () => {
+  await step("6 who's working marks the expert", async () => {
     await ana.getByTestId("lp-ledger-open").click();
     await ana.getByTestId("lp-ledger-expert").first().waitFor({ timeout: 30_000 });
     await shot(ana, "experts-who-is-working");
     await ana.keyboard.press("Escape");
-    await ana.getByTestId("lp-packs-open").click();
-    await ana.getByTestId("lp-pack-name").fill("Hero lighting");
-    await ana.getByTestId("lp-pack-save").click();
-    const pack = ana.locator('[data-testid="lp-pack"][data-pack-id="hero-lighting"]');
-    await pack.waitFor({ timeout: 30_000 });
-    await pack.getByTestId("lp-pack-context").waitFor();
-    const text = await pack.innerText();
-    expect(
-      /Workflow steps/.test(text) && /Light the hero shot/i.test(text),
-      `pack view: ${text.slice(0, 400)}`,
-    );
-    await shot(ana, "packs-context-view");
-    const saved = await pageApi(ana, `/api/lp/packs?projectId=${projectId}`);
-    expect(saved.packs?.[0]?.pack?.context?.source?.threadId === anaThreadId, "pack source");
-    const used = await pageApi(ana, "/api/lp/packs/use", {
-      projectId,
-      packId: "hero-lighting",
-      targetThreadId: request.expertThreadId,
-    });
-    expect(used.delivered, `use: ${JSON.stringify(used)}`);
-    await pack.getByTestId("lp-pack-use").click();
-    await sleep(500);
-    await shot(ana, "packs-use-in");
-    await ana.keyboard.press("Escape");
-    await ana.keyboard.press("Escape");
-    // The agent reads the pack through the ledger's packs tool.
-    const prompt = "read pack hero-lighting";
-    await sendMessage(ana, prompt);
-    const reply = await waitForReply(ana, "PACK ANSWER", prompt);
-    expect(/Hero lighting/.test(reply), `agent read: ${reply.slice(-400)}`);
   });
 
   await step(
@@ -688,14 +655,10 @@ try {
     expect(delegate.httpStatus >= 400, "delegating after the end still works");
   });
 
-  await step("8 log out lands on log in again; /demo/packs renders", async () => {
+  await step("8 log out lands on log in again", async () => {
     await pageApi(ana, "/api/lp/auth/logout", {});
     await ana.goto(`${WEB}/`);
     await ana.waitForURL((url) => url.pathname === "/lp/login", { timeout: 60_000 });
-    await ingrid.goto(`${WEB}/demo/packs?t=24&autoplay=0`);
-    await ingrid.getByText("Beta").first().waitFor({ timeout: 60_000 });
-    await sleep(1000);
-    await shot(ingrid, "demo-packs");
   });
 } catch (error) {
   failed = true;

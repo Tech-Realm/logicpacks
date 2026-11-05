@@ -5,8 +5,8 @@
  */
 import * as NodeCrypto from "node:crypto";
 
+/** Older grants and access codes may still carry "packs" (removed); isGatedFeature drops it. */
 export const GATED_FEATURES = [
-  "packs",
   "talent",
   "apps",
   "freelancer_jobs",
@@ -16,7 +16,7 @@ export const GATED_FEATURES = [
 export type GatedFeature = (typeof GATED_FEATURES)[number];
 
 /** What new codes offer in /ops: freelancer_jobs and cloud_agents ride on talent and cloud. */
-export const OFFERED_FEATURES: ReadonlyArray<GatedFeature> = ["talent", "apps", "packs", "cloud"];
+export const OFFERED_FEATURES: ReadonlyArray<GatedFeature> = ["talent", "apps", "cloud"];
 
 /**
  * Features that come with another. Talent covers the freelancer jobs board; cloud (cloud sync:
@@ -32,6 +32,8 @@ const IMPLIES: Partial<Record<GatedFeature, ReadonlyArray<GatedFeature>>> = {
 export const expandFeatures = (features: Iterable<GatedFeature>): Set<GatedFeature> => {
   const out = new Set<GatedFeature>();
   for (const feature of features) {
+    // Codes and grants issued before Packs was removed may still list it: ignore, never fail.
+    if (!isGatedFeature(feature)) continue;
     out.add(feature);
     for (const implied of IMPLIES[feature] ?? []) out.add(implied);
   }
@@ -39,7 +41,6 @@ export const expandFeatures = (features: Iterable<GatedFeature>): Set<GatedFeatu
 };
 
 export const FEATURE_LABEL: Record<GatedFeature, string> = {
-  packs: "Packs",
   talent: "Talent (vetted freelancers)",
   apps: "Apps",
   freelancer_jobs: "Freelancer jobs board",

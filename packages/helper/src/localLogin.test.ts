@@ -98,12 +98,12 @@ describe("lp login connects to the LogicPacks app on this computer", () => {
     expect(seen.map((call) => call.url)).not.toContain("/api/lp/helper/pair/start");
   });
 
-  it("says to open the Mac app, and that cloud is coming soon, when no app is running", async () => {
+  it("says to open the app, and that cloud is coming soon, when no app is running", async () => {
     const { ctx, config } = context();
     const result = await loginCommand(ctx, parseArgs(["login"]));
     expect(result.exitCode).toBe(1);
     expect(result.text).toBe(OPEN_THE_APP);
-    expect(result.text).toMatch(/Open the LogicPacks Mac app/);
+    expect(result.text).toMatch(/Open the LogicPacks app/);
     expect(result.text).toMatch(/cloud is coming soon/i);
     expect(result.text).not.toMatch(/Run lp login\b(?! again)/);
     expect(config().server).toBeNull();
@@ -122,7 +122,7 @@ describe("lp login connects to the LogicPacks app on this computer", () => {
   });
 
   it("the not-connected text points at the app, not at a login that cannot finish", () => {
-    expect(NOT_CONNECTED).toContain("Open the LogicPacks Mac app");
+    expect(NOT_CONNECTED).toContain("Open the LogicPacks app");
     expect(NOT_CONNECTED).toMatch(/coming soon/);
   });
 });
@@ -135,7 +135,7 @@ describe("the setup prompt and setup.md", () => {
     }
     expect(setupPrompt("new")).toMatch(/connect it to the LogicPacks app on this computer/);
     expect(renderSetupGuide()).toMatch(/## 2\. Connect to the LogicPacks app/);
-    expect(renderSetupGuide()).toMatch(/open the LogicPacks Mac app/);
+    expect(renderSetupGuide()).toMatch(/open the LogicPacks app/);
     expect(setupPromptCommand).toBeDefined();
   });
 });

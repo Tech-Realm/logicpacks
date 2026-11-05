@@ -242,7 +242,7 @@ import {
 } from "./ui/combobox";
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
-import { openLpDialog, readLogicPacksSession } from "../logicpacks/store";
+import { openLpDialog, readLogicPacksSession, useLpReadOnly } from "../logicpacks/store";
 import { readCloudSyncLocked } from "../logicpacks/features";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { TooltipProvider } from "./ui/tooltip";
@@ -2889,6 +2889,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
   const showJumpHints = useThreadJumpHintsVisible(shouldShowJumpHintsNow);
 
+  // LogicPacks: a Read only member starts no threads.
+  const lpReadOnly = useLpReadOnly(null);
   const handleNewThreadClick = (event?: ReactMouseEvent) => {
     if (
       boringSidebarEnabled ||
@@ -3090,7 +3092,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
-              newThreadDisabled={projects.length === 0}
+              newThreadDisabled={projects.length === 0 || lpReadOnly}
               newThreadShortcutLabel={newThreadShortcutLabel}
               newThreadInProjectShortcutLabel={newThreadInProjectShortcutLabel}
               showNewThreadInProjectHint={!boringSidebarEnabled && projectGroups.length > 1}

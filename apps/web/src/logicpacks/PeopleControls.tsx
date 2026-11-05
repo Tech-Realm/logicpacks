@@ -1,8 +1,10 @@
 import type { EnvironmentId, PresenceEntry, ProjectId } from "@logicpacks/contracts";
-import { PlusIcon } from "lucide-react";
+import { PaletteIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "../components/ui/button";
+import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
+import { presenceColor } from "../presence/presenceLogic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { useProjectPresence } from "../presence/usePresence";
@@ -108,6 +110,91 @@ function peopleLine(
     .join(". ");
 }
 
+const SWATCHES = [0, 1, 2, 3, 4, 5, 6, 7] as const;
+
+/** Workspace owners pick each person's colour (avatars and message tags). Hidden for everyone else. */
+function LpPersonColors({ workspaceId }: { workspaceId: string }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{
+    members: ReadonlyArray<LpWorkspaceMember>;
+    canManage: boolean;
+  } | null>(null);
+  // oxlint-disable-next-line logicpacks/no-unreasoned-state-sync -- loads member colours from the LogicPacks API when the popover opens
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void lpApi
+      .members(workspaceId)
+      .then((result) => live && setState(result))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [open, workspaceId]);
+  const pick = (userId: string, color: number) => {
+    setState((current) =>
+      current === null
+        ? current
+        : {
+            ...current,
+            members: current.members.map((m) => (m.user.userId === userId ? { ...m, color } : m)),
+          },
+    );
+    membersByWorkspace.delete(workspaceId);
+    void lpApi.setPersonColor(userId, color).catch(() => undefined);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            data-testid="lp-people-colors-open"
+            aria-label="Choose people colours"
+          />
+        }
+      >
+        <PaletteIcon aria-hidden />
+      </PopoverTrigger>
+      <PopoverPopup side="bottom" align="start" className="w-72" data-testid="lp-people-colors">
+        <div className="flex flex-col gap-2">
+          <p className="text-xs font-medium text-muted-foreground">People colours</p>
+          {state === null ? (
+            <p className="text-sm text-muted-foreground">Loading</p>
+          ) : !state.canManage ? (
+            <p className="text-sm text-muted-foreground">Only a workspace owner can change colours.</p>
+          ) : (
+            state.members.map((member) => (
+              <div key={member.user.userId} className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-sm">{member.user.displayName}</span>
+                <span className="flex shrink-0 gap-1">
+                  {SWATCHES.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      data-testid="lp-color-swatch"
+                      data-color={color}
+                      aria-label={`Colour ${color + 1} for ${member.user.displayName}`}
+                      aria-pressed={member.color === color}
+                      onClick={() => pick(member.user.userId, color)}
+                      className={cn(
+                        "size-4 cursor-pointer rounded-full ring-offset-1 ring-offset-background",
+                        member.color === color && "ring-2 ring-foreground",
+                      )}
+                      style={{ backgroundColor: presenceColor(color) }}
+                    />
+                  ))}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
 /**
  * The top bar's people: everyone in the workspace, with whoever is in this project now
  * drawn in ink. You count as here.
@@ -136,7 +223,9 @@ export function LpProjectPeople({
   const shown = ordered.slice(0, MAX_FACES);
   const overflow = ordered.length - shown.length;
   const line = peopleLine(ordered, here, selfId);
+  const workspaceId = currentWorkspace(session)?.workspaceId ?? null;
   return (
+    <span className="inline-flex shrink-0 items-center gap-1">
     <Tooltip>
       <TooltipTrigger
         render={
@@ -177,6 +266,8 @@ export function LpProjectPeople({
         </div>
       </TooltipPopup>
     </Tooltip>
+    {workspaceId !== null ? <LpPersonColors workspaceId={workspaceId} /> : null}
+    </span>
   );
 }
 

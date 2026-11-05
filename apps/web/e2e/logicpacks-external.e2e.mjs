@@ -6,7 +6,7 @@
 // Every agent is the scripted ACP mock (lp-ledger-mock-agent.mjs); briefs use the built-in
 // template estimator (LOGICPACKS_EXTERNAL_DRAFT=template), so no model or paid API is called.
 //   1 staff (Sam) opens /ops and makes access codes; a code can be revoked
-//   2 a locked user (Lee) sees no packs or talent UI, gets 403 feature_locked, and core works
+//   2 a locked user (Lee) sees no talent UI, gets 403 feature_locked, and core works
 //   3 Dana signs up with an access code and talent unlocks; a used-up code is refused
 //   4 /pricing shows PKR for CF-IPCountry PK and How we vet
 //   5 Dana (CF-IPCountry PK) asks for help on one screen, sees PKR, accepts
@@ -418,7 +418,7 @@ try {
     const listed = await pageApi(sam, "/api/lp/ops/codes");
     expect(!JSON.stringify(listed).includes(talentCode), "the plain code is stored or listed");
     const revokable = await pageApi(sam, "/api/lp/ops/codes", {
-      features: ["packs"],
+      features: ["apps"],
       maxUses: 5,
       expiresInDays: 7,
       note: "to revoke",
@@ -433,60 +433,44 @@ try {
     await shot(sam, "external-ops-codes");
   });
 
-  await step(
-    "2 a locked user sees no packs or talent UI, gets 403 feature_locked; core works",
-    async () => {
-      lee = await newPage(browser);
-      await signUp(lee, "Lee", email("lee"));
+  await step("2 a locked user sees no talent UI, gets 403 feature_locked; core works", async () => {
+    lee = await newPage(browser);
+    await signUp(lee, "Lee", email("lee"));
+    expect(
+      !(await features(lee)).some((f) => ["talent", "apps", "freelancer_jobs"].includes(f)),
+      `Lee has features: ${await features(lee)}`,
+    );
+    const created = await pageApi(lee, "/api/lp/projects/new", {
+      kind: "empty",
+      name: `Lee ${run}`,
+    });
+    expect(created.projectId, `Lee's project: ${JSON.stringify(created)}`);
+    await openProject(lee, `Lee ${run}`);
+    await sendMessage(lee, "Hello from Lee");
+    await waitForReply(lee, "Done.", "Hello from Lee");
+    await sleep(1500);
+    for (const testId of ["lp-external-open"]) {
       expect(
-        !(await features(lee)).some((f) =>
-          ["talent", "packs", "apps", "freelancer_jobs"].includes(f),
-        ),
-        `Lee has features: ${await features(lee)}`,
+        (await lee.getByTestId(testId).count()) === 0,
+        `${testId} is visible to a locked user`,
       );
-      const created = await pageApi(lee, "/api/lp/projects/new", {
-        kind: "empty",
-        name: `Lee ${run}`,
-      });
-      expect(created.projectId, `Lee's project: ${JSON.stringify(created)}`);
-      await openProject(lee, `Lee ${run}`);
-      await sendMessage(lee, "Hello from Lee");
-      await waitForReply(lee, "Done.", "Hello from Lee");
-      await sleep(1500);
-      for (const testId of ["lp-external-open", "lp-save-pack", "packs-demo-entry"]) {
-        expect(
-          (await lee.getByTestId(testId).count()) === 0,
-          `${testId} is visible to a locked user`,
-        );
-      }
-      const packs = await pageApi(lee, `/api/lp/packs?projectId=${created.projectId}`);
-      expect(
-        packs.httpStatus === 403 && packs.error === "feature_locked" && packs.feature === "packs",
-        `packs: ${JSON.stringify(packs)}`,
-      );
-      const draft = await pageApi(lee, "/api/lp/external/draft", {
-        projectId: created.projectId,
-        need: NEED,
-      });
-      expect(
-        draft.httpStatus === 403 && draft.error === "feature_locked",
-        `draft: ${JSON.stringify(draft)}`,
-      );
-      const revoked = await pageApi(lee, "/api/lp/features/redeem", { code: sam.revokedCode });
-      expect(
-        revoked.httpStatus === 410 && revoked.error === "revoked",
-        `revoked code: ${JSON.stringify(revoked)}`,
-      );
-      await lee.goto(`${WEB}/ops`);
-      await lee.getByTestId("lp-ops-forbidden").waitFor({ timeout: 20_000 });
-      // Staff have every feature: packs answers them.
-      const samPacks = await pageApi(sam, `/api/lp/packs?projectId=${created.projectId}`);
-      expect(
-        samPacks.error !== "feature_locked",
-        `staff packs: ${JSON.stringify(samPacks).slice(0, 200)}`,
-      );
-    },
-  );
+    }
+    const draft = await pageApi(lee, "/api/lp/external/draft", {
+      projectId: created.projectId,
+      need: NEED,
+    });
+    expect(
+      draft.httpStatus === 403 && draft.error === "feature_locked",
+      `draft: ${JSON.stringify(draft)}`,
+    );
+    const revoked = await pageApi(lee, "/api/lp/features/redeem", { code: sam.revokedCode });
+    expect(
+      revoked.httpStatus === 410 && revoked.error === "revoked",
+      `revoked code: ${JSON.stringify(revoked)}`,
+    );
+    await lee.goto(`${WEB}/ops`);
+    await lee.getByTestId("lp-ops-forbidden").waitFor({ timeout: 20_000 });
+  });
 
   await step(
     "3 Dana signs up with an access code: talent unlocks; the used-up code is refused",

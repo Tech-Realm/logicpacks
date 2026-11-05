@@ -4,6 +4,8 @@
  * conflicts. No Effect and no storage, so every rule is unit-tested directly.
  */
 
+import type { PreservedVersion } from "./preservedVersions.ts";
+
 export interface LedgerPerson {
   /** A member's user id, or "host" for the host operator. */
   readonly id: string;
@@ -95,6 +97,10 @@ export interface LedgerConflict {
   readonly negotiationId: string | null;
   readonly createdAtMs: number;
   readonly resolvedAtMs: number | null;
+  /** Each party's last written version of the file, saved when the overlap was seen (preservedVersions.ts). */
+  readonly preserved?: ReadonlyArray<PreservedVersion> | undefined;
+  /** No git remote to branch on: Merge both writes every saved version into the file itself. */
+  readonly localMerge?: boolean | undefined;
 }
 
 export const MAX_FILES = 8;

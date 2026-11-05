@@ -26,6 +26,11 @@ export interface LayoutMode {
   readonly autoOpen: WorkspaceSurface;
   /** Pixel widths of the projects sidebar and the workspace panel. */
   readonly widths: { readonly projects: number; readonly workspace: number };
+  /**
+   * Built-in modes only: the workspace panel opens at this share (0 to 1) of the room beside the
+   * sidebar until the person drags it (then their width is kept). Dev is 70% files, 30% chat.
+   */
+  readonly workspaceShare?: number;
 }
 
 export const LAYOUT_WIDTH_LIMITS = {
@@ -41,6 +46,7 @@ export const DEV_LAYOUT_MODE: LayoutMode = {
   open: { projects: true, workspace: true, terminal: false },
   autoOpen: "files",
   widths: { projects: 220, workspace: 600 },
+  workspaceShare: 0.7,
 };
 
 export const VIBE_LAYOUT_MODE: LayoutMode = {
@@ -115,7 +121,8 @@ export function duplicateLayoutMode(
   const base = slugify(label);
   let id = base;
   for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;
-  return { ...source, id, label, open: { ...source.open }, widths: { ...source.widths } };
+  const { workspaceShare: _builtInShare, ...rest } = source;
+  return { ...rest, id, label, open: { ...source.open }, widths: { ...source.widths } };
 }
 
 export type LayoutModesParseResult =

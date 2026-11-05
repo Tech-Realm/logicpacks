@@ -1,6 +1,6 @@
 {
   "name": "@logicpacks/contracts",
-  "version": "0.1.11",
+  "version": "0.1.15",
   "private": true,
   "files": [
     "dist"

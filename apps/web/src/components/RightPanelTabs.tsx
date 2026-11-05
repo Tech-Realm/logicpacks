@@ -1265,7 +1265,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             : "pr-3",
           ownsDesktopTitleBar && "drag-region",
           ownsDesktopTitleBar && "wco:pr-(--workspace-native-controls-inset)",
-          props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          // The sidebar toggle is fixed to the window corner: clear it whenever this bar is the
+          // leftmost thing in the window (maximized, or the panel sits on the left in Dev).
+          props.mode === "inline" &&
+            (props.maximized || panelSide === "left") &&
+            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
         data-right-panel-tabbar
       >

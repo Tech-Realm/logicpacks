@@ -24,6 +24,7 @@ import { LogicPacksAccess } from "./LogicPacksAccess.ts";
 import { isActive } from "./negotiation.ts";
 import { scopeText, type Goal } from "./goals.ts";
 import { ProjectGoals } from "./ProjectGoals.ts";
+import { refuseIfReadOnly } from "./readOnly.ts";
 import { LedgerError, ProjectLedger } from "./ProjectLedger.ts";
 
 /**
@@ -182,7 +183,12 @@ const registerRoute = HttpRouter.add(
       branch: body.branch ?? null,
       events,
     });
-    if (!result.linked) return json({ error: result.reason, message: result.message }, 404);
+    if (!result.linked) {
+      return json(
+        { error: result.reason, message: result.message },
+        result.reason === "read_only" ? 403 : 404,
+      );
+    }
     const sql = yield* SqlClient.SqlClient;
     yield* ensureHarnessTable(sql).pipe(Effect.ignore);
     yield* sql`
@@ -566,6 +572,8 @@ const sendRoute = HttpRouter.add(
     if (fromProject === null || !(yield* canSee(caller, fromProject))) {
       return notFound("Your thread was not found. Run lp agents to register this folder again.");
     }
+    const readOnly = yield* refuseIfReadOnly(caller, fromProject);
+    if (readOnly !== null) return readOnly;
     const fromThread = (yield* ledger.view(fromProject)).threads.find(
       (thread) => thread.threadId === body.fromThreadId,
     );
@@ -589,6 +597,8 @@ const sendRoute = HttpRouter.add(
         );
       }
       projectId = body.projectId;
+      const targetReadOnly = yield* refuseIfReadOnly(caller, projectId);
+      if (targetReadOnly !== null) return targetReadOnly;
     }
     const fromName = yield* ledger.personName(participantOf(caller));
     const crossProject = projectId !== fromProject;
@@ -668,6 +678,8 @@ const goalsRoute = HttpRouter.add(
     if (goal === undefined || !(yield* canSee(caller, goal.projectId))) {
       return notFound("No such goal. Run lp goals list.");
     }
+    const readOnly = yield* refuseIfReadOnly(caller, goal.projectId);
+    if (readOnly !== null) return readOnly;
     const actor = yield* goals.actorFor(participant, goal.projectId);
     const next =
       body.op === "confirm"

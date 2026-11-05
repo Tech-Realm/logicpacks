@@ -609,7 +609,6 @@ try {
     await page.goto(`${WEB}/`);
     await page.locator('[contenteditable="true"]').first().waitFor({ timeout: 60_000 });
     expect((await page.getByTestId("any-app-demo-entry").count()) === 0, "Any app demo link");
-    expect((await page.getByTestId("packs-demo-entry").count()) === 0, "Packs demo link");
     expect((await page.getByText("Beta", { exact: true }).count()) === 0, "Beta group");
     await shot(page, "15-sidebar-no-demos");
   });

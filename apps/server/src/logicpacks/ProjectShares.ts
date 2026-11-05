@@ -1,3 +1,4 @@
+// @effect-diagnostics preferSchemaOverJson:off -- invite zones are the plain JSON of the accessZones.ts value set.
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- invite tokens need randomBytes.
 import * as NodeCrypto from "node:crypto";
 
@@ -7,6 +8,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { normalizeZones, type ZoneValues } from "@logicpacks/contracts";
 
 import {
   LogicPacksAccess,
@@ -60,6 +63,8 @@ export interface PendingInvite {
   readonly expiresAt: string;
   readonly lastSentAt: string;
   readonly token: string;
+  /** What the invitee gets on accepting (their override); null follows the project's default. */
+  readonly zones: ZoneValues | null;
 }
 
 export interface ShareLink {
@@ -131,6 +136,7 @@ interface InviteRow {
   readonly last_sent_at: string;
   readonly accepted_by: string | null;
   readonly accepted_at: string | null;
+  readonly zones: string | null;
 }
 
 interface LinkRow {
@@ -143,6 +149,15 @@ interface LinkRow {
   readonly domain: string | null;
 }
 
+const parseZones = (raw: string | null | undefined): ZoneValues | null => {
+  if (raw === null || raw === undefined || raw.length === 0) return null;
+  try {
+    return normalizeZones(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+};
+
 const toInvite = (row: InviteRow): PendingInvite => ({
   inviteId: row.invite_id,
   projectId: row.project_id,
@@ -153,6 +168,7 @@ const toInvite = (row: InviteRow): PendingInvite => ({
   expiresAt: row.expires_at,
   lastSentAt: row.last_sent_at,
   token: row.token,
+  zones: parseZones(row.zones),
 });
 
 const toLink = (row: LinkRow): ShareLink => ({
@@ -178,6 +194,8 @@ export class ProjectShares extends Context.Service<
       readonly actorUserId: string | null;
       readonly user: string;
       readonly mail: MailContext;
+      /** Zones for this person (an override). Omitted: they follow the project's default. */
+      readonly zones?: ZoneValues | undefined;
     }) => Effect.Effect<ShareOutcome, ShareError | LogicPacksAccessError>;
     readonly listInvites: (
       projectId: string,
@@ -228,6 +246,18 @@ export class ProjectShares extends Context.Service<
   }
 >()("logicpacks/logicpacks/ProjectShares") {}
 
+/** Older databases lack the invites' zones column; add it once. */
+const ensureInviteZones = (sql: SqlClient.SqlClient) =>
+  sql
+    .unsafe<{ readonly name: string }>("PRAGMA table_info(logicpacks_project_invites)")
+    .pipe(
+      Effect.flatMap((columns) =>
+        columns.some((column) => column.name === "zones")
+          ? Effect.void
+          : sql.unsafe("ALTER TABLE logicpacks_project_invites ADD COLUMN zones TEXT").pipe(Effect.asVoid),
+      ),
+    );
+
 const ensureSchema = (sql: SqlClient.SqlClient) =>
   Effect.all(
     [
@@ -273,7 +303,7 @@ const ensureSchema = (sql: SqlClient.SqlClient) =>
       `,
     ],
     { discard: true },
-  );
+  ).pipe(Effect.andThen(ensureInviteZones(sql)));
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -353,7 +383,18 @@ const make = Effect.gen(function* () {
     row: InviteRow,
     user: LogicPacksUser,
   ) {
+    const had = access.roleOf(user.userId, row.project_id) !== null;
     yield* grant(row.project_id, user);
+    // An invite that named zones gives the invitee that override (never to someone who already had a seat).
+    const zones = parseZones(row.zones);
+    if (!had && zones !== null) {
+      yield* access.setMemberZones({
+        projectId: row.project_id,
+        actorUserId: null,
+        userId: user.userId,
+        zones,
+      });
+    }
     const at = yield* nowIso;
     yield* sql`
       UPDATE logicpacks_project_invites
@@ -460,7 +501,17 @@ const make = Effect.gen(function* () {
             () => Effect.succeed(null),
           ),
         );
-      if (existing !== null) return { kind: "member", member: existing } as const;
+      if (existing !== null) {
+        if (input.zones !== undefined && existing.role !== "owner") {
+          yield* access.setMemberZones({
+            projectId: input.projectId,
+            actorUserId: input.actorUserId,
+            userId: existing.user.userId,
+            zones: input.zones,
+          });
+        }
+        return { kind: "member", member: existing } as const;
+      }
       const email = input.user.includes("@") ? normalizeEmail(input.user) : null;
       if (email === null) {
         return yield* fail(
@@ -476,9 +527,12 @@ const make = Effect.gen(function* () {
       `.pipe(Effect.mapError(storage("reading an invite")));
       let row: InviteRow;
       if (current[0]) {
-        row = { ...current[0], expires_at: expiresAt, last_sent_at: at };
+        const zonesJson =
+          input.zones === undefined ? current[0].zones : JSON.stringify(normalizeZones(input.zones));
+        row = { ...current[0], expires_at: expiresAt, last_sent_at: at, zones: zonesJson };
         yield* sql`
-          UPDATE logicpacks_project_invites SET expires_at = ${expiresAt}, last_sent_at = ${at}
+          UPDATE logicpacks_project_invites
+          SET expires_at = ${expiresAt}, last_sent_at = ${at}, zones = ${zonesJson}
           WHERE invite_id = ${row.invite_id}
         `.pipe(Effect.mapError(storage("refreshing an invite")));
       } else {
@@ -494,12 +548,13 @@ const make = Effect.gen(function* () {
           last_sent_at: at,
           accepted_by: null,
           accepted_at: null,
+          zones: input.zones === undefined ? null : JSON.stringify(normalizeZones(input.zones)),
         };
         yield* sql`
           INSERT INTO logicpacks_project_invites
-            (invite_id, project_id, email, role, token, invited_by, created_at, expires_at, last_sent_at)
+            (invite_id, project_id, email, role, token, invited_by, created_at, expires_at, last_sent_at, zones)
           VALUES (${row.invite_id}, ${row.project_id}, ${row.email}, ${row.role}, ${row.token},
-            ${row.invited_by}, ${row.created_at}, ${row.expires_at}, ${row.last_sent_at})
+            ${row.invited_by}, ${row.created_at}, ${row.expires_at}, ${row.last_sent_at}, ${row.zones})
         `.pipe(Effect.mapError(storage("creating an invite")));
       }
       const mail = yield* sendInvite(row, input.actorUserId, input.mail);

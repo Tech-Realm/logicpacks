@@ -241,7 +241,6 @@ describe("lp mcp", () => {
         "send_to_thread",
         "propose_merge",
         "note",
-        "packs",
         "ask",
         "reply",
         "inbox",

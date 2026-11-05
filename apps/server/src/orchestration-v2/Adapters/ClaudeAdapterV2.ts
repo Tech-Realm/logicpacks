@@ -58,6 +58,7 @@ import type {
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the SDK takes a Node ChildProcess for the CLI.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
+import { confineClaudeSpawn, preflightConfinement } from "../../logicpacks/claudeConfinement.ts";
 import { parseCliArgs } from "@logicpacks/shared/cliArgs";
 import { fromLenientJson } from "@logicpacks/shared/schemaJson";
 import { AgentScope } from "@logicpacks/shared/AgentScope";
@@ -345,6 +346,8 @@ const CLAUDE_GROUP_WATCH_SCRIPT = [
 export function spawnClaudeProcessGroup(
   options: ClaudeSpawnOptions,
   onExit?: () => void,
+  /** A login handed to the CLI on file descriptor 4 (never in its environment). */
+  secretOnFd4?: string,
 ): ClaudeSpawnedProcess {
   const child = NodeChildProcess.spawn(
     "/bin/sh",
@@ -353,10 +356,18 @@ export function spawnClaudeProcessGroup(
       cwd: options.cwd,
       env: options.env,
       signal: options.signal,
-      stdio: ["pipe", "pipe", "ignore", "pipe"],
+      stdio:
+        secretOnFd4 === undefined
+          ? ["pipe", "pipe", "ignore", "pipe"]
+          : ["pipe", "pipe", "ignore", "pipe", "pipe"],
       detached: true,
     },
   );
+  if (secretOnFd4 !== undefined) {
+    const secretPipe = child.stdio[4] as NodeJS.WritableStream | null | undefined;
+    secretPipe?.on("error", () => {});
+    secretPipe?.end(secretOnFd4);
+  }
   child.once("exit", () => {
     try {
       signalProcessGroup(child.pid ?? 0, "SIGKILL");
@@ -1704,7 +1715,6 @@ export const CLAUDE_READ_ONLY_LOGICPACKS_MCP_ALLOWED_TOOLS: ReadonlyArray<string
   "mcp__logicpacks__lp_project_threads",
   "mcp__logicpacks__lp_project_who_is_working_on",
   "mcp__logicpacks__lp_project_conflicts",
-  "mcp__logicpacks__lp_project_packs",
   "mcp__logicpacks__lp_project_goals",
   "mcp__logicpacks__lp_thread_search",
   "mcp__logicpacks__lp_preview_list",
@@ -2540,10 +2550,41 @@ function permissionModeForClaudeRuntimePolicy(
   }
 }
 
+/**
+ * Tools a limited run (a member of a shared host) must not have. Claude removes a disallowed tool
+ * from the model's context and refuses it in every permission mode, including bypass. Honest
+ * limit: this covers Claude's own shell and edit tools, not host MCP servers or skills, and an
+ * agent that may edit files can still write code that someone later runs.
+ */
+export function claudeDisallowedToolsForLimits(
+  limits: ProviderAdapter.ProviderAdapterV2ToolLimits | undefined,
+): ReadonlyArray<string> | undefined {
+  if (limits === undefined) return undefined;
+  const denied: Array<string> = [];
+  if (!limits.shell) denied.push("Bash", "BashOutput", "KillShell", "KillBash", "Monitor");
+  if (!limits.edits) denied.push("Edit", "MultiEdit", "Write", "NotebookEdit");
+  else if (!limits.shell) {
+    // Project scripts in t3.json run on worktree setup: writing them is running code.
+    denied.push("Edit(**/t3.json)", "MultiEdit(**/t3.json)", "Write(**/t3.json)");
+  }
+  if (limits.hideSecrets) {
+    for (const glob of limits.secretGlobs) {
+      const folder = /\/\*\*$|\/$/.test(glob) ? glob.replace(/\/\*\*$|\/$/, "") : null;
+      const rule = folder === null ? `**/${glob}` : `**/${folder}/**`;
+      denied.push(`Read(${rule})`);
+      if (limits.edits) denied.push(`Edit(${rule})`, `Write(${rule})`);
+    }
+  }
+  return denied.length === 0 ? undefined : denied;
+}
+
 export interface ClaudeRuntimeQueryPolicy {
+  /** A member's run is confined to folders by the OS; the CLI is launched inside the sandbox or not at all. */
+  readonly confinement?: NonNullable<ProviderAdapter.ProviderAdapterV2ToolLimits["confinement"]>;
   readonly permissionMode: PermissionMode;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
+  readonly disallowedTools?: ReadonlyArray<string>;
   readonly allowDangerouslySkipPermissions?: true;
   readonly installPermissionCallback: boolean;
 }
@@ -2577,6 +2618,8 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
     readOnlyTools !== undefined && readOnlyPolicyAllowsGlobalReads(runtimePolicy)
       ? readOnlyTools
       : undefined;
+  const disallowedTools = claudeDisallowedToolsForLimits(runtimePolicy.toolLimits);
+  const confinement = runtimePolicy.toolLimits?.confinement;
   // acceptEdits approves edits before the callback; the callback must ask for everything else.
   const installPermissionCallback =
     downgraded ||
@@ -2590,6 +2633,8 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
       permissionMode,
       ...(readOnlyTools === undefined ? {} : { tools: readOnlyTools }),
       ...(allowedTools === undefined ? {} : { allowedTools }),
+      ...(disallowedTools === undefined ? {} : { disallowedTools }),
+      ...(confinement === undefined ? {} : { confinement }),
       // Claude routes Plan-mode writes to the callback even in Auto or Full access.
       installPermissionCallback: true,
     };
@@ -2599,6 +2644,8 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
     permissionMode,
     ...(readOnlyTools === undefined ? {} : { tools: readOnlyTools }),
     ...(allowedTools === undefined ? {} : { allowedTools }),
+    ...(disallowedTools === undefined ? {} : { disallowedTools }),
+    ...(confinement === undefined ? {} : { confinement }),
     ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
     installPermissionCallback,
   };
@@ -2698,6 +2745,8 @@ function claudeRuntimeQueryPolicyKey(policy: ClaudeRuntimeQueryPolicy): string {
     permissionMode: policy.permissionMode,
     tools: policy.tools,
     allowedTools: policy.allowedTools,
+    disallowedTools: policy.disallowedTools,
+    confinement: policy.confinement,
     allowDangerouslySkipPermissions: policy.allowDangerouslySkipPermissions,
     installPermissionCallback: policy.installPermissionCallback,
   });
@@ -10210,6 +10259,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
+          // A member's run is confined by the OS: no sandbox, no run (fail closed).
+          const confinement = queryPolicy.confinement;
+          if (confinement !== undefined) {
+            yield* Effect.try({
+              try: () => preflightConfinement(confinement),
+              catch: (cause) => queryRunnerError(cause, "sandbox"),
+            });
+          }
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -10232,6 +10289,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(mcpOverrides.allowedTools === undefined
               ? {}
               : { allowedTools: mcpOverrides.allowedTools }),
+            ...(queryPolicy.disallowedTools === undefined
+              ? {}
+              : { disallowedTools: queryPolicy.disallowedTools }),
             ...(mcpOverrides.mcpServers === undefined
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
@@ -10249,6 +10309,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
+          const confinedQueryOptions =
+            confinement === undefined
+              ? queryOptions
+              : {
+                  ...queryOptions,
+                  spawnClaudeCodeProcess: (spawnOptions: ClaudeSpawnOptions) => {
+                    const confined = confineClaudeSpawn(spawnOptions, confinement);
+                    return spawnClaudeProcessGroup(confined, undefined, confined.secretToken);
+                  },
+                };
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
@@ -10256,7 +10326,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .open({
               threadId: turnInput.threadId,
               providerSessionId: input.providerSessionId,
-              options: queryOptions,
+              options: confinedQueryOptions,
             })
             .pipe(
               Effect.onError(() =>

@@ -15,7 +15,7 @@ const PREVIEW_PANEL_WIDTH_STORAGE_KEY = "logicpacks:preview-panel-width";
 const PREVIEW_PANEL_MIN_WIDTH = 360;
 const PREVIEW_PANEL_MAX_WIDTH_FRACTION = 0.7;
 /** Below this, the sibling chat column's composer overflows. */
-const SIBLING_COLUMN_MIN_WIDTH = 360;
+const SIBLING_COLUMN_MIN_WIDTH = 280;
 const PREVIEW_PANEL_DEFAULT_WIDTH = 540;
 
 export function usePreviewPanelInlineSize(
@@ -23,6 +23,8 @@ export function usePreviewPanelInlineSize(
     readonly enabled?: boolean | undefined;
     readonly widthStorageKey?: string | undefined;
     readonly defaultWidth?: number | undefined;
+    /** The default as a share (0 to 1) of the row the panel shares, once measured. */
+    readonly defaultShare?: number | undefined;
     readonly container?: HTMLElement | null | undefined;
   } = {},
 ): PreviewPanelInlineSize {
@@ -32,9 +34,15 @@ export function usePreviewPanelInlineSize(
   const [maxWidth, setMaxWidth] = useState(() =>
     getPreviewPanelMaxWidth(typeof window === "undefined" ? 1280 : window.innerWidth),
   );
+  const [rowWidth, setRowWidth] = useState<number | null>(null);
+  const defaultShare = options.defaultShare;
+  const defaultWidth =
+    defaultShare !== undefined && rowWidth !== null
+      ? Math.round(rowWidth * defaultShare)
+      : (options.defaultWidth ?? PREVIEW_PANEL_DEFAULT_WIDTH);
   const { width, handlers } = useResizableWidth({
     storageKey: options.widthStorageKey ?? PREVIEW_PANEL_WIDTH_STORAGE_KEY,
-    defaultWidth: options.defaultWidth ?? PREVIEW_PANEL_DEFAULT_WIDTH,
+    defaultWidth,
     minWidth: PREVIEW_PANEL_MIN_WIDTH,
     maxWidth,
     // The drag handle sits on the edge that faces the chat column.
@@ -47,6 +55,7 @@ export function usePreviewPanelInlineSize(
     // of a sidebar drag, but an unchanged cap skips re-rendering the owner.
     const measure = () => {
       setMaxWidth(getPreviewPanelMaxWidth(window.innerWidth, row?.clientWidth));
+      setRowWidth(row ? row.clientWidth : null);
     };
     measure();
     let frame = 0;

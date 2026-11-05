@@ -25,12 +25,12 @@ import { Switch } from "../components/ui/switch";
 import { toastManager } from "../components/ui/toast";
 import {
   inviteAgentPrompt,
-  lpAbsoluteUrl,
   lpApi,
   type LpSession,
   type LpWorkspaceMember,
   type LpWorkspaceRole,
 } from "./api";
+import { lpPublicShareUrl, lpShareUrl, useLpRelay, useLpShareBase } from "./shareUrl";
 import { ConnectAgentForm } from "./ConnectAgent";
 import { featuresApi } from "./features";
 import { ShareProjectDialog } from "./ShareProjectDialog";
@@ -56,7 +56,11 @@ const copy = (text: string, title: string) =>
       toastManager.add({ type: "error", title: "Could not copy", description: errorText(error) }),
     );
 
-const ROLE_LABEL: Record<LpWorkspaceRole, string> = { owner: "Owner", member: "Member" };
+const ROLE_LABEL: Record<LpWorkspaceRole, string> = {
+  owner: "Owner",
+  member: "Member",
+  viewer: "Read only",
+};
 
 /** One dialog for a workspace: invite, people and roles, and the rarely used rest under Advanced. */
 function ManageWorkspaceDialog({
@@ -86,6 +90,8 @@ function ManageWorkspaceDialog({
 
   const loadOnOpen = useEffectEvent(() => {
     void load();
+    // A Read only member cannot hand out the invite link.
+    if (workspace?.role === "viewer") return;
     void lpApi
       .invite(workspaceId)
       .then((result) => setInvitePath(result.path))
@@ -93,6 +99,8 @@ function ManageWorkspaceDialog({
   });
   // oxlint-disable-next-line logicpacks/no-unreasoned-state-sync -- loads the workspace's people and its invite link when the dialog opens
   useEffect(() => loadOnOpen(), []);
+  const shareBase = useLpShareBase();
+  const relay = useLpRelay();
 
   const run = (action: () => Promise<unknown>) => {
     setError(null);
@@ -103,7 +111,10 @@ function ManageWorkspaceDialog({
   };
 
   if (!workspace) return null;
-  const inviteUrl = invitePath === null ? null : lpAbsoluteUrl(invitePath);
+  const inviteUrl =
+    invitePath === null
+      ? null
+      : (lpPublicShareUrl(invitePath, relay) ?? lpShareUrl(invitePath, shareBase));
   const me = session.user?.userId ?? null;
 
   const addPerson = (event: FormEvent) => {
@@ -123,6 +134,7 @@ function ManageWorkspaceDialog({
       </DialogHeader>
       <DialogPanel>
         <div className="flex flex-col gap-5">
+          {workspace.role === "viewer" ? null : (
           <section className="flex flex-col gap-2" aria-label="Invite">
             <h3 className="text-sm font-medium">Invite link</h3>
             <div className="flex gap-2">
@@ -164,6 +176,7 @@ function ManageWorkspaceDialog({
               </span>
             </div>
           </section>
+          )}
 
           {canManage ? (
             <form className="flex flex-col gap-2" onSubmit={addPerson} aria-label="Add a person">
@@ -213,7 +226,7 @@ function ManageWorkspaceDialog({
                     >
                       <SelectTrigger
                         aria-label={`Role for ${member.user.displayName}`}
-                        className="w-28"
+                        className="w-32"
                         size="sm"
                       >
                         <SelectValue>{ROLE_LABEL[member.role]}</SelectValue>
@@ -221,6 +234,7 @@ function ManageWorkspaceDialog({
                       <SelectPopup>
                         <SelectItem value="owner">Owner</SelectItem>
                         <SelectItem value="member">Member</SelectItem>
+                        <SelectItem value="viewer">Read only</SelectItem>
                       </SelectPopup>
                     </Select>
                   ) : (
@@ -373,7 +387,6 @@ function NewWorkspaceDialog() {
 }
 
 const FEATURE_NAMES: Record<string, string> = {
-  packs: "Packs",
   talent: "Vetted freelancers",
   apps: "Apps",
   freelancer_jobs: "Freelancer jobs",

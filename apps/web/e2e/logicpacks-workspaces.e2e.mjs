@@ -73,6 +73,8 @@ const server = NodeChildProcess.spawn(
     env: {
       ...process.env,
       LOGICPACKS_MEMBERS_OWN_PROVIDERS: "false",
+      // This server is the account owner's own: their accounts make projects and workspaces.
+      LOGICPACKS_PROJECTS_ZONE_DEFAULT: "on",
       LOGICPACKS_SYNC_SECONDS: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],

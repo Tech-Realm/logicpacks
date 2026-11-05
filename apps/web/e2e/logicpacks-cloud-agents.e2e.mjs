@@ -409,7 +409,7 @@ try {
       await signUp(mia, "Mia", email("mia"), null, "soon");
       await mia.getByText("Cloud workspaces are coming soon.").waitFor({ timeout: 30_000 });
       await mia
-        .getByText("Download LogicPacks for Mac to work with your team now.")
+        .getByText("Download the LogicPacks app for Mac or Windows to work with your team now.")
         .waitFor({ timeout: 10_000 });
       expect(
         (await mia.getByTestId("lp-cloud-download").getAttribute("href"))?.includes(
