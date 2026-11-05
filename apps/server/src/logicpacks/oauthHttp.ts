@@ -13,6 +13,7 @@ import {
   resolveCaller,
   withSessionCookie,
 } from "./http.ts";
+import { HOST_COOKIE_PREFIX } from "../auth/utils.ts";
 import { mockConsentPageHtml, oauthErrorPageHtml } from "./loginPage.ts";
 import {
   type CompleteResult,
@@ -42,8 +43,12 @@ const errorPage = (message: string, status = 400) =>
 const oauthErrorPage = (error: MemberOAuthError) =>
   Effect.succeed(errorPage(error.message, error.reason === "storage" ? 500 : 400));
 
+/** A planted state cookie would sign someone in to the planter's account: same rule as the session. */
+const stateCookieName = (secure: boolean) =>
+  secure ? `${HOST_COOKIE_PREFIX}${STATE_COOKIE}` : STATE_COOKIE;
+
 const withStateCookie = (state: string, secure: boolean) =>
-  HttpServerResponse.setCookieUnsafe(STATE_COOKIE, state, {
+  HttpServerResponse.setCookieUnsafe(stateCookieName(secure), state, {
     httpOnly: true,
     // Lax: the provider's redirect back is a top-level GET, which still carries it.
     sameSite: "lax",
@@ -52,30 +57,37 @@ const withStateCookie = (state: string, secure: boolean) =>
     maxAge: "10 minutes",
   });
 
-const cookieState = Effect.map(
-  HttpServerRequest.HttpServerRequest,
-  (request) => request.cookies[STATE_COOKIE] ?? null,
-);
-
 const secureCookies = (oauth: MemberOAuth["Service"]) =>
   oauth.settings.publicBaseUrl.startsWith("https://");
+
+const cookieStateOf = (oauth: MemberOAuth["Service"]) =>
+  Effect.map(
+    HttpServerRequest.HttpServerRequest,
+    (request) => request.cookies[stateCookieName(secureCookies(oauth))] ?? null,
+  );
+
+const expireStateCookie = (response: HttpServerResponse.HttpServerResponse) =>
+  response.pipe(
+    HttpServerResponse.expireCookieUnsafe(STATE_COOKIE, { path: "/" }),
+    HttpServerResponse.expireCookieUnsafe(stateCookieName(true), { path: "/", secure: true }),
+  );
 
 /** Signed in: the member's session cookie, the state cookie gone, then where they were going. */
 const finish = Effect.fn("logicpacks.oauth.finish")(function* (result: CompleteResult) {
   switch (result.kind) {
     case "redirect":
       return redirect(result.location).pipe(
-        HttpServerResponse.expireCookieUnsafe(STATE_COOKIE, { path: "/" }),
+        expireStateCookie,
       );
     case "connected":
       return redirect(result.next ?? "/lp/account").pipe(
-        HttpServerResponse.expireCookieUnsafe(STATE_COOKIE, { path: "/" }),
+        expireStateCookie,
       );
     case "signed_in": {
       const session = yield* issueMemberSession(result.user);
       return yield* withSessionCookie(session)(
         redirect(result.next ?? "/").pipe(
-          HttpServerResponse.expireCookieUnsafe(STATE_COOKIE, { path: "/" }),
+          expireStateCookie,
         ),
       );
     }
@@ -135,7 +147,7 @@ const callbackHandler = Effect.fn("logicpacks.oauth.callback")(
       provider,
       code: yield* queryParam("code"),
       state: yield* queryParam("state"),
-      cookieState: yield* cookieState,
+      cookieState: yield* cookieStateOf(oauth),
     });
     return yield* finish(result);
   },
@@ -172,7 +184,7 @@ const handoffRoute = HttpRouter.add(
     const oauth = yield* MemberOAuth;
     const result = yield* oauth.redeemHandoff({
       token: yield* queryParam("t"),
-      cookieState: yield* cookieState,
+      cookieState: yield* cookieStateOf(oauth),
     });
     return yield* finish(result);
   }).pipe(Effect.catchTags({ MemberOAuthError: oauthErrorPage })),

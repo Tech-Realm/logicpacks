@@ -12,6 +12,47 @@ import * as Result from "effect/Result";
 const SESSION_COOKIE_NAME = "lp_session";
 
 /** Cookies span ports; use separate names for servers sharing a hostname. */
+/**
+ * Public links are subdomains of the sign-in server's domain, and a host's page is host-written
+ * code: it can set a cookie for the parent domain, and it would be sent here too. `__Host-` is the
+ * one name a browser refuses to accept that way (Secure, no Domain, Path=/). It needs https, so
+ * plain http on a LAN or loopback keeps the plain name; nothing there shares a parent domain.
+ */
+export const HOST_COOKIE_PREFIX = "__Host-";
+
+const httpsOriginHosts = (env: NodeJS.ProcessEnv): ReadonlySet<string> => {
+  const authority = env.LOGICPACKS_ACCOUNT_AUTHORITY_URL?.trim() || "https://app.logicpacks.io";
+  const hosts = new Set<string>();
+  for (const raw of [authority, ...(env.LOGICPACKS_PUBLIC_ORIGINS ?? "").split(",")]) {
+    try {
+      const url = new URL(raw.trim());
+      if (url.protocol === "https:") hosts.add(url.host.toLowerCase());
+    } catch {
+      // Not an address ("off", empty).
+    }
+  }
+  return hosts;
+};
+
+/**
+ * Did this request reach us over https? The relay and Cloudflare say so. The address this server is
+ * known by on https counts even if a proxy forgot to, so the strict name cannot be turned off from
+ * outside. A client claiming https over plain http only gets a cookie its browser will refuse.
+ */
+export const isHttpsRequest = (
+  headers: Readonly<Record<string, string | undefined>>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean => {
+  if (headers["x-forwarded-proto"]?.split(",")[0]?.trim().toLowerCase() === "https") return true;
+  const host = headers.host?.trim().toLowerCase();
+  return host !== undefined && httpsOriginHosts(env).has(host);
+};
+
+export const requestCookieName = (
+  baseName: string,
+  headers: Readonly<Record<string, string | undefined>>,
+): string => (isHttpsRequest(headers) ? `${HOST_COOKIE_PREFIX}${baseName}` : baseName);
+
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";
   readonly port: number;

@@ -12,7 +12,7 @@ import { RELAY_MARKER_HEADER, isRelayedHeaders, relayMarkerValue, sessionAllowed
 const ctx = { sessionCookieName: "lp_session_3000_abc" };
 const get = (path: string, headers: Record<string, string> = {}) => classifyRelayedRequest({ method: "GET", path, headers }, ctx);
 const post = (path: string, headers: Record<string, string> = {}) => classifyRelayedRequest({ method: "POST", path, headers }, ctx);
-const member = { cookie: "lp_session_3000_abc=tok" };
+const member = { cookie: "__Host-lp_session_3000_abc=tok" };
 
 describe("what a relayed visitor may reach", () => {
   it("lets an invite holder open only the join and sign-in surfaces", () => {
@@ -83,7 +83,9 @@ describe("what a relayed visitor may reach", () => {
     expect(get("/", member).allow).toBe(true);
     expect(get("/api/lp/me", { authorization: "Bearer abc" }).allow).toBe(true);
     expect(get("/ws?wsTicket=abc").allow).toBe(true);
-    expect(get("/api/lp/me", { cookie: "other=1; lp_session_3000_abc=" }).allow).toBe(false);
+    expect(get("/api/lp/me", { cookie: "other=1; __Host-lp_session_3000_abc=" }).allow).toBe(false);
+    // A plain name could have been planted by a sibling subdomain.
+    expect(get("/api/lp/me", { cookie: "lp_session_3000_abc=tok" }).allow).toBe(false);
     expect(get("/api/lp/me", { cookie: "lp_session_9999_zzz=tok" }).allow).toBe(false);
   });
 

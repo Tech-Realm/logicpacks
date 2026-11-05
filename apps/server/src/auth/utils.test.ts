@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveAuthClientMetadata, resolveSessionCookieName } from "./utils.ts";
+import {
+  deriveAuthClientMetadata,
+  isHttpsRequest,
+  requestCookieName,
+  resolveSessionCookieName,
+} from "./utils.ts";
 
 describe("deriveAuthClientMetadata", () => {
   it("labels Electron user agents as Electron instead of Chrome", () => {
@@ -149,5 +154,28 @@ describe("session cookie isolation", () => {
     });
 
     expect(first).toBe(second);
+  });
+});
+
+describe("session cookies on https", () => {
+  it("counts a request as https only when the front says so, or by its known https address", () => {
+    expect(isHttpsRequest({ "x-forwarded-proto": "https" }, {})).toBe(true);
+    expect(isHttpsRequest({ "x-forwarded-proto": "https,http" }, {})).toBe(true);
+    expect(isHttpsRequest({ "x-forwarded-proto": "http", host: "192.168.1.5:3773" }, {})).toBe(false);
+    expect(isHttpsRequest({ host: "127.0.0.1:3773" }, {})).toBe(false);
+    // The sign-in server stays strict even if a proxy drops the header.
+    expect(isHttpsRequest({ host: "app.logicpacks.io" }, {})).toBe(true);
+    expect(
+      isHttpsRequest(
+        { host: "lp.example.com" },
+        { LOGICPACKS_ACCOUNT_AUTHORITY_URL: "off", LOGICPACKS_PUBLIC_ORIGINS: "https://lp.example.com" },
+      ),
+    ).toBe(true);
+    expect(isHttpsRequest({ host: "app.logicpacks.io" }, { LOGICPACKS_ACCOUNT_AUTHORITY_URL: "http://x" })).toBe(false);
+  });
+
+  it("names the cookie for the request", () => {
+    expect(requestCookieName("lp_session_a", { "x-forwarded-proto": "https" })).toBe("__Host-lp_session_a");
+    expect(requestCookieName("lp_session_a", { host: "127.0.0.1:3773" })).toBe("lp_session_a");
   });
 });

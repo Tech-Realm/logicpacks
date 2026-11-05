@@ -28,6 +28,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import { startTlsFront } from "./lp-tls-front.mjs";
+
 const require = NodeModule.createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
@@ -128,11 +130,14 @@ const startHost = () =>
 
 // ── The relay (local mode runs it in this process) ──────────────────────────
 let relay = null;
+let relayTls = null;
 const relayLogs = [];
 const relayState = NodePath.join(root, "relay-hosts.json");
 async function startLocalRelay() {
   const { startRelay } = await import(NodeURL.pathToFileURL(NodePath.join(repo, "infra/share-relay/src/relay.ts")).href);
   relay = await startRelay({ baseDomain: LOCAL_BASE, port: relayPort, stateFile: relayState, log: (line) => relayLogs.push(line) });
+  // Public links are https in production, so a browser sees real origins and real cookie rules.
+  relayTls ??= startTlsFront({ dir: NodePath.join(root, "relay-tls"), baseDomain: LOCAL_BASE, port: relayPort + 1, route: () => relayPort });
 }
 
 // ── Harness ─────────────────────────────────────────────────────────────────
@@ -204,7 +209,7 @@ const pct = (values, p) => {
 // ── HTTP to the public name without a browser ───────────────────────────────
 let origin = null; // https://<id>.<base> as the app reports it
 const publicHostname = () => new URL(origin).hostname;
-const publicBase = () => (REAL ? origin : `http://${publicHostname()}`);
+const publicBase = () => origin;
 function rawRequest(path, { method = "GET", headers = {}, body, hostname = publicHostname() } = {}) {
   return new Promise((resolve, reject) => {
     const options = REAL
@@ -295,7 +300,7 @@ try {
   }
   browser = await chromium.launch({
     headless: true,
-    args: REAL ? [] : [`--host-resolver-rules=MAP *.${LOCAL_BASE} 127.0.0.1:${relayPort}`],
+    args: REAL ? [] : [`--host-resolver-rules=MAP *.${LOCAL_BASE} 127.0.0.1:${relayPort + 1}`, "--ignore-certificate-errors"],
   });
   const halContext = await browser.newContext({ viewport: { width: 1360, height: 900 } });
   hal = await halContext.newPage();
@@ -412,7 +417,7 @@ try {
     } else await waitFor("the app's own socket", () => wsEvents.some((w) => w.url.includes("/ws") && !w.closed), 30_000);
     const live = wsEvents.filter((w) => w.url.includes("/ws") && !w.closed);
     expect(live.length > 0, `no live /ws socket: ${JSON.stringify(wsEvents)}`);
-    expect(live.every((w) => w.url.startsWith(REAL ? "wss://" : "ws://") && w.url.includes(publicHostname())), `ws goes elsewhere: ${live.map((w) => w.url)}`);
+    expect(live.every((w) => w.url.startsWith("wss://") && w.url.includes(publicHostname())), `ws goes elsewhere: ${live.map((w) => w.url)}`);
     await shot(bo, "04-bo-thread");
   });
 
@@ -575,6 +580,48 @@ try {
     }
   });
 
+  await step("6e cookie tossing: the member session is a host-only __Host- cookie; planted parent-domain cookies have no effect", async () => {
+    // What the host sets for Bo on a public link.
+    const cookies = await boContext.cookies();
+    const mine = cookies.find((c) => c.name.includes("session"));
+    expect(mine !== undefined, "no member session cookie");
+    expect(mine.name.startsWith("__Host-"), `session cookie name is ${mine.name}`);
+    expect(mine.secure && mine.path === "/" && !mine.domain.startsWith("."), `cookie must be Secure, path /, host-only: ${JSON.stringify({ secure: mine.secure, path: mine.path, domain: mine.domain })}`);
+    // The attacker is a second member of the same host: a real session token the victim's browser should never accept.
+    const attackerContext = await browser.newContext({ viewport: { width: 1000, height: 700 } });
+    const attacker = await attackerContext.newPage();
+    await attacker.goto(`${publicBase()}${linkPath}`);
+    await attacker.locator("h1", { hasText: "Join the project" }).waitFor({ timeout: 45_000 });
+    await attacker.fill("#name", "Mallory");
+    await attacker.fill("#email", `mallory-${run}@example.com`);
+    await attacker.fill("#password", PASSWORD);
+    await attacker.click("#submit");
+    await attacker.waitForURL((u) => u.origin === new URL(publicBase()).origin && !u.pathname.startsWith("/lp/"), { timeout: 30_000 });
+    const theirs = (await attackerContext.cookies()).find((c) => c.name.includes("session"));
+    expect(theirs !== undefined, "no attacker session");
+    const plain = theirs.name.replace(/^__Host-/, "");
+    // A page on a sibling public link can set cookies for the parent domain: plant them in a clean browser.
+    const victimContext = await browser.newContext({ viewport: { width: 1000, height: 700 } });
+    const parent = `.${LOCAL_BASE}`;
+    await victimContext.addCookies(
+      [plain, "lp_session", "logicpacks_session"].map((name) => ({ name, value: theirs.value, domain: parent, path: "/", secure: true })),
+    );
+    const victim = await victimContext.newPage();
+    await victim.goto(`${publicBase()}/`);
+    await victim.waitForLoadState("load");
+    const who = await pageApi(victim, "/api/lp/session");
+    const projects = await pageApi(victim, "/api/lp/projects");
+    expect(!who.user, `a planted plain or legacy cookie signed the victim in as ${JSON.stringify(who.user)?.slice(0, 120)}`);
+    expect(!(projects.projects ?? []).some((p) => p.id === projectId), "a planted cookie exposed the project");
+    // The same value under the prefixed name cannot be planted either: a prefixed cookie must be Secure, host-only, path /.
+    await victimContext.addCookies([{ name: theirs.name, value: theirs.value, domain: parent, path: "/", secure: true }]).catch(() => undefined);
+    const again = await pageApi(victim, "/api/lp/session");
+    expect(!again.user, `a parent-domain __Host- cookie signed the victim in as ${JSON.stringify(again.user)?.slice(0, 120)}`);
+    note("planted plain, legacy and prefixed parent-domain cookies: the victim stays signed out");
+    await attackerContext.close();
+    await victimContext.close();
+  });
+
   await step("7 latency: relay overhead against a direct connection", async () => {
     const jar = { cookie: boCookie };
     const direct200 = [];
@@ -726,6 +773,7 @@ try {
   if (browser) await browser.close().catch(() => undefined);
   if (!keep) {
     for (const child of Object.values(children)) await stopChild(child);
+    relayTls?.close();
     if (relay) await relay.close().catch(() => undefined);
     NodeFS.rmSync(root, { recursive: true, force: true });
   } else console.log(`kept ${root}`);

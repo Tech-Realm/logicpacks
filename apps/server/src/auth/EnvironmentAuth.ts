@@ -39,6 +39,7 @@ import * as ServerConfig from "../config.ts";
 import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import { HOST_COOKIE_PREFIX, isHttpsRequest } from "./utils.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./ReusableDevAuth.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
@@ -639,7 +640,10 @@ export function selectRequestCredential(
   cookieName: string,
   legacyCookieName: string | undefined,
 ) {
-  const cookieToken = request.cookies[cookieName];
+  // On https only the `__Host-` name counts: a plain name there could have come from a sibling
+  // subdomain. Old sessions under it sign in again; they cannot be told apart from a planted one.
+  const https = isHttpsRequest(request.headers);
+  const cookieToken = request.cookies[https ? `${HOST_COOKIE_PREFIX}${cookieName}` : cookieName];
   if (cookieToken !== undefined) {
     return { token: cookieToken, source: "cookie" } as const;
   }
@@ -654,7 +658,7 @@ export function selectRequestCredential(
     return { token: dpopToken, source: "dpop" } as const;
   }
 
-  const legacyToken = legacyCookieName ? request.cookies[legacyCookieName] : undefined;
+  const legacyToken = legacyCookieName && !https ? request.cookies[legacyCookieName] : undefined;
   if (legacyToken !== undefined) {
     return { token: legacyToken, source: "legacy-cookie" } as const;
   }

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 
+import { HOST_COOKIE_PREFIX } from "../auth/utils.ts";
 import { RELAY_MARKER_HEADER, relayMarkerValue } from "./relayTrust.ts";
 
 /** Page for anything a visitor without a member session may not see. Says nothing about this host. */
@@ -95,7 +96,14 @@ const hasCredential = (request: RelayedRequest, ctx: GatewayContext, normalizedP
   if (ctx.sessionCookieName !== null && typeof cookie === "string") {
     for (const part of cookie.split(";")) {
       const eq = part.indexOf("=");
-      if (eq > 0 && part.slice(0, eq).trim() === ctx.sessionCookieName && part.length > eq + 1) return true;
+      // Public links are always https, so only the `__Host-` name is a session here.
+      if (
+        eq > 0 &&
+        part.slice(0, eq).trim() === `${HOST_COOKIE_PREFIX}${ctx.sessionCookieName}` &&
+        part.length > eq + 1
+      ) {
+        return true;
+      }
     }
   }
   return normalizedPath === "/ws" && /(^|&)wsTicket=/.test(query);

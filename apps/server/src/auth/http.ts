@@ -33,7 +33,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { traceAuthenticatedRelayRequest, traceRelayRequest } from "../cloud/traceRelayRequest.ts";
-import { deriveAuthClientMetadata } from "./utils.ts";
+import { deriveAuthClientMetadata, isHttpsRequest, requestCookieName } from "./utils.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
 
 const CREDENTIAL_RESPONSE_HEADERS = {
@@ -312,22 +312,30 @@ export const layer = HttpApiBuilder.group(
                 ? previousCredential.token
                 : undefined,
             );
-            const cookieName = result.cookieName ?? sessions.cookieName;
+            const https = isHttpsRequest(request.headers);
+            const cookieName =
+              result.cookieName ?? requestCookieName(sessions.cookieName, request.headers);
             const selectedCookie = yield* Effect.fromResult(
               Cookies.set(Cookies.empty, cookieName, result.sessionToken, {
                 expires: DateTime.toDate(result.response.expiresAt),
                 httpOnly: true,
                 path: "/",
                 sameSite: "lax",
+                secure: https,
               }),
             ).pipe(Effect.catch(() => failEnvironmentInternal("browser_session_cookie_failed")));
             const sessionCookies = result.expireNormalCookie
               ? yield* Effect.fromResult(
-                  Cookies.expireCookie(selectedCookie, sessions.cookieName, {
-                    httpOnly: true,
-                    path: "/",
-                    sameSite: "lax",
-                  }),
+                  Cookies.expireCookie(
+                    selectedCookie,
+                    requestCookieName(sessions.cookieName, request.headers),
+                    {
+                      httpOnly: true,
+                      path: "/",
+                      sameSite: "lax",
+                      secure: https,
+                    },
+                  ),
                 ).pipe(Effect.catch(() => failEnvironmentInternal("browser_session_cookie_failed")))
               : selectedCookie;
 

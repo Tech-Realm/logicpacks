@@ -25,7 +25,7 @@ import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../auth/SessionStore.ts";
-import { deriveAuthClientMetadata } from "../auth/utils.ts";
+import { deriveAuthClientMetadata, isHttpsRequest, requestCookieName } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import { messageAuthorStore } from "./messageAuthors.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
@@ -200,7 +200,8 @@ export const issueMemberSession = Effect.fn("logicpacks.issueMemberSession")(fun
     client: { ...deriveAuthClientMetadata({ request }), label: user.displayName },
   });
   return {
-    cookieName: sessions.cookieName,
+    cookieName: requestCookieName(sessions.cookieName, request.headers),
+    secure: isHttpsRequest(request.headers),
     token: issued.token,
     maxAge: Duration.millis(
       Math.max(
@@ -214,6 +215,7 @@ export const issueMemberSession = Effect.fn("logicpacks.issueMemberSession")(fun
 export const withSessionCookie =
   (session: {
     readonly cookieName: string;
+    readonly secure: boolean;
     readonly token: string;
     readonly maxAge: Duration.Duration;
   }) =>
@@ -223,6 +225,7 @@ export const withSessionCookie =
         httpOnly: true,
         path: "/",
         sameSite: "lax",
+        secure: session.secure,
         maxAge: session.maxAge,
       }),
     );
@@ -927,7 +930,10 @@ const logoutRoute = HttpRouter.add(
       yield* sessions.revoke(session.value.sessionId).pipe(Effect.ignore);
     }
     return yield* json({ signedOut: true }).pipe(
-      HttpServerResponse.expireCookie(sessions.cookieName, { path: "/" }),
+      HttpServerResponse.expireCookie(requestCookieName(sessions.cookieName, request.headers), {
+        path: "/",
+        secure: isHttpsRequest(request.headers),
+      }),
     );
   }),
 );
